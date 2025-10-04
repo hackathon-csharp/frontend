@@ -19,6 +19,11 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(publicDir, 'index.html'));
 });
 
+//coder
+app.get('/coder', (req, res) => {
+  res.sendFile(path.join(publicDir, 'coder.html'));
+});
+
 
 // Сертификаты
 const options = {

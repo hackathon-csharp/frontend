@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>IR LED Color Encoder</title>
+<style>
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial;margin:16px;background:#f6f7fb;color:#0b1220}
+h1{font-size:20px;margin:0 0 8px}
+.box{padding:12px;background:#fff;border-radius:10px;box-shadow:0 2px 8px rgba(12,20,40,0.06);margin-bottom:12px}
+canvas{background:#000;border-radius:8px;display:block;margin-top:8px}
+button{padding:8px 12px;border-radius:8px;border:0;background:#2563eb;color:#fff;cursor:pointer;margin-top:8px;margin-right:8px}
+input[type=text]{width:100%;padding:6px;border-radius:6px;border:1px solid #ccc;margin-top:4px}
+#signalLog{margin-top:8px;max-height:200px;overflow:auto;background:#f0f4ff;color:#0b1220;padding:8px;border-radius:8px;font-family:monospace;font-size:13px}
+</style>
+</head>
+<body>
+<h1>IR LED Color Encoder</h1>
+
+<div class="box">
+  <label>Введите сообщение для передачи:</label>
+  <input type="text" id="messageInput" placeholder="Введите текст">
+  <button id="startBtn">Начать отправку</button>
+  <button id="syncBtn">Запустить синхронизацию</button>
+</div>
+
+<div class="box">
+  <canvas id="ledCanvas" width="200" height="200"></canvas>
+  <div id="signalLog">—</div>
+</div>
+
+<script src="datapacklib.js"></script>
+<script>
+const canvas = document.getElementById('ledCanvas');
+const ctx = canvas.getContext('2d');
+const startBtn = document.getElementById('startBtn');
+const syncBtn = document.getElementById('syncBtn');
+const messageInput = document.getElementById('messageInput');
+const signalLogEl = document.getElementById('signalLog');
+
+const colorMap = {
+  2: 'rgb(255,0,0)',    // красный
+  3: 'rgb(0,255,0)',    // зелёный яркий
+  4: 'rgb(0,0,255)',    // синий
+  1: 'rgb(255,255,255)',// белый
+  0: 'rgb(0,0,0)'       // выкл
+};
+
+const colorNames = {
+  2: 'Красный',
+  3: 'Зелёный',
+  4: 'Синий',
+  1: 'Белый',
+  0: 'Выкл'
+};
+
+let sending = false;
+
+function drawColor(level){
+  ctx.fillStyle = colorMap[level] || 'black';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+}
+
+async function sleep(ms){
+  return new Promise(resolve=>setTimeout(resolve, ms));
+}
+
+async function transmitMessage(message){
+  sending = true;
+  signalLogEl.innerHTML = ''; // очистка списка
+
+  const encoder = new datapack.Encoder();
+  const payload = new TextEncoder().encode(message);
+  const signalBuffer = new datapack.SignalBuffer();
+  const success = encoder.encode(payload, payload.length, signalBuffer);
+  if(!success){
+    alert("Ошибка кодирования!");
+    sending = false;
+    drawColor(datapack.LightLevel.Off);
+    return;
+  }
+
+
+
+    const newBuffer = []
+
+     for (const change of signalBuffer) {
+        // newBuffer.push({level: 1, duration: 30});
+        newBuffer.push({level: change.level, duration: change.duration - 100})
+    }
+    
+  console.log(newBuffer);
+
+    // Создаём массив для результата
+    const decodedMessages = [];
+
+    // Создаём декодер с callback
+    const decoder = new datapack.Decoder((payload, length) => {
+    // payload — Uint8Array с исходными данными
+    decodedMessages.push(new TextDecoder().decode(payload));
+    });
+
+    // Feed всех изменений из signalBuffer в декодер
+    for (const change of newBuffer) {
+    decoder.feed(change);
+    }
+
+    // После этого decodedMessages[0] содержит исходную строку
+    if (decodedMessages.length > 0) {
+    console.log("Раскодированное сообщение:", decodedMessages[0]);
+    } else {
+    console.log("Не удалось раскодировать сообщение");
+}
+
+
+
+  for(const change of signalBuffer){
+    drawColor(change.level);
+    const durationMs = change.duration;
+    signalLogEl.innerHTML += `${colorNames[change.level] || change.level}: ${durationMs.toFixed(1)} мс<br>`;
+    signalLogEl.scrollTop = signalLogEl.scrollHeight;
+    await sleep(durationMs);
+  }
+
+  drawColor(datapack.LightLevel.Off);
+  sending = false;
+}
+
+startBtn.addEventListener('click', ()=>{
+  if(sending) return;
+  const msg = messageInput.value.trim();
+  if(!msg) return alert("Введите сообщение!");
+  transmitMessage(msg);
+});
+
+async function runSyncSequence(){
+  if(sending) return; // не мешаем текущей передаче
+  sending = true;
+
+//   const sequence = [
+//     {level: 4, name: 'Выкл', time: 4000},
+//     {level: 3, name: 'Белый', time: 1000},
+//     {level: 4, name: 'Выкл', time: 500},
+//     {level: 0, name: 'Красный', time: 1000},
+//     {level: 4, name: 'Выкл', time: 500},
+//     {level: 1, name: 'Зелёный', time: 1000},
+//     {level: 4, name: 'Выкл', time: 500},
+//     {level: 2, name: 'Синий', time: 1000},
+//     {level: 4, name: 'Выкл', time: 500}
+//   ];
+  const sequence = [
+    {level: 4, name: 'Выкл', time: 4000},
+    {level: 3, name: 'Белый', time: 2000},
+    {level: 4, name: 'Выкл', time: 1000},
+    {level: 0, name: 'Красный', time: 2000},
+    {level: 4, name: 'Выкл', time: 1000},
+    {level: 1, name: 'Зелёный', time: 2000},
+    {level: 4, name: 'Выкл', time: 1000},
+    {level: 2, name: 'Синий', time: 2000},
+    {level: 4, name: 'Выкл', time: 1000}
+  ];
+  signalLogEl.innerHTML = ''; // очистка логов
+
+  for(const step of sequence){
+    drawColor(step.level);  
+    signalLogEl.innerHTML += `${step.name}: ${step.time} мс<br>`;
+    signalLogEl.scrollTop = signalLogEl.scrollHeight;
+    await sleep(step.time);
+  }
+
+ drawColor(4); 
+  sending = false;
+}
+
+syncBtn.addEventListener('click', runSyncSequence);
+</script>
+</body>
+</html>

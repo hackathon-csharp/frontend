@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>IR LED Blink Detector</title>
+<title>IR LED Color Decoder with Auto Sync</title>
 <style>
 body{font-family:system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial;margin:16px;background:#f6f7fb;color:#0b1220}
 h1{font-size:20px;margin:0 0 8px}
@@ -11,37 +11,45 @@ h1{font-size:20px;margin:0 0 8px}
 video, canvas{background:#000;border-radius:8px;max-width:100%;}
 #video{display: none;}
 #controls{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}
-label{font-size:13px}
 .box{padding:12px;background:#fff;border-radius:10px;box-shadow:0 2px 8px rgba(12,20,40,0.06)}
-input[type=range]{width:180px}
 #log{height:140px;overflow:auto;background:#0b1220;color:#dff3ff;padding:8px;border-radius:8px;font-family:monospace;font-size:13px}
+#decoded{height:140px;overflow:auto;background:#f0f4ff;color:#0b1220;padding:8px;border-radius:8px;font-family:monospace;font-size:13px;margin-top:8px}
 button{padding:8px 12px;border-radius:8px;border:0;background:#2563eb;color:#fff;cursor:pointer}
 button.secondary{background:#e6eefc;color:#0b1220}
 small{color:#39424a}
+#currentColorBox{width:24px;height:24px;display:inline-block;border:1px solid #ccc;margin-left:8px;vertical-align:middle;border-radius:4px}
 </style>
 </head>
 <body>
-<h1>IR LED Blink Detector (веб)</h1>
+<h1>IR LED Color Decoder with Auto Sync</h1>
 <div class="row">
   <div class="box" style="flex:1;min-width:320px">
     <video id="video" autoplay playsinline muted></video>
     <canvas id="overlay" width="640" height="480" style="position:relative;display:block;margin-top:8px"></canvas>
-    <div id="controls" style="margin-top:12px">
-      <button id="startTransmissionBtn">Начать передачу</button>
+    <div id="controls">
+      <button id="startTransmissionBtn">Начать запись</button>
       <button id="syncBtn" class="secondary">Синхронизация</button>
     </div>
     <p style="margin-top:6px"><small>Кликните на видео, чтобы выбрать область (ROI) для слежения. По умолчанию отслеживается центр.</small></p>
   </div>
   <div class="box" style="width:360px">
     <h2 style="margin-top:0">Информация</h2>
-    <p style="margin:6px 0">Датчик считает яркость в выбранной области и фиксирует состояния: светодиод горит или не горит.</p>
-    <h3 style="margin-bottom:6px">Состояния</h3>
     <div id="status">—</div>
+
+    <h3 style="margin-bottom:6px">Текущий цвет</h3>
+    <div id="currentColor">—</div>
+    <div id="currentColorBox"></div>
+
     <h3 style="margin-bottom:6px">Записанные события</h3>
     <div id="log"></div>
+    <h3 style="margin-bottom:6px">Декодированное сообщение</h3>
+    <div id="decoded">—</div>
   </div>
 </div>
 
+
+
+<script src="datapacklib.js"></script>
 <script>
 const video = document.getElementById('video');
 const overlay = document.getElementById('overlay');
@@ -50,48 +58,40 @@ const startTransmissionBtn = document.getElementById('startTransmissionBtn');
 const syncBtn = document.getElementById('syncBtn');
 const statusEl = document.getElementById('status');
 const logEl = document.getElementById('log');
+const decodedEl = document.getElementById('decoded');
+const currentColorEl = document.getElementById('currentColor');
+const currentColorBox = document.getElementById('currentColorBox');
+
+const fromColorToLevel = {
+  "off" : 0,
+  "red": 2,
+  "green": 3,
+  "blue": 4,
+  "white": 1,
+}
+
+const colorNames = {
+  2: 'red',
+  3: 'green',
+  4: 'blue',
+  1: 'white',
+  0: 'off'
+};
 
 let stream = null;
 let running = false;
-let rafId = null;
-let smoothing = 0.15;
-let smoothVal = 0;
 let roi = null;
 
 let transmissionActive = false;
-let blinkEvents = []; 
+let blinkEvents = [];
 let lastTransitionTime = Date.now();
-let isOn = false;
+let lastColor = 0;
 
-// Для синхронизации
-let minBrightness = Infinity;
-let maxBrightness = -Infinity;
-let calibratedThreshold = null;
-let syncing = false;
 
-async function startCamera() {
-  if (running) return;
+let colorEvents = [];
+let lastColorRecorded = "off";
+let lastColorTime = Date.now();
 
-  const constraints = { video:{ facingMode:{ideal:"environment"}, width:{ideal:1280}, height:{ideal:720} }, audio:false };
-  try {
-    stream = await navigator.mediaDevices.getUserMedia(constraints);
-  } catch {
-    try { stream = await navigator.mediaDevices.getUserMedia({video:true,audio:false}); }
-    catch(err) { statusEl.textContent = 'Ошибка доступа к камере: ' + (err.message||err.name); return; }
-  }
-
-  video.srcObject = stream;
-  video.muted = true; video.playsInline = true; video.autoplay = true;
-  try { await video.play(); } catch(e){}
-
-  overlay.width = video.videoWidth || 640;
-  overlay.height = video.videoHeight || 480;
-  if (!roi) roi = { x: Math.floor(overlay.width/2), y: Math.floor(overlay.height/2), size: 64 };
-
-  running = true;
-  statusEl.textContent = 'Камера запущена';
-  loop();
-}
 
 function log(msg){
   const time = new Date().toLocaleTimeString();
@@ -104,121 +104,253 @@ overlay.addEventListener('click',(e)=>{
   const rect = overlay.getBoundingClientRect();
   const x = Math.floor((e.clientX-rect.left)*(overlay.width/rect.width));
   const y = Math.floor((e.clientY-rect.top)*(overlay.height/rect.height));
-  roi = { x, y, size:64 };
+  roi = { x, y, size: 128 };
   log('ROI установлен: x=' + roi.x + ', y=' + roi.y);
 });
 
-function detectBrightness(imageData){
+function detectColor(imageData) {
   const data = imageData.data;
-  let sum = 0;
-  const px = imageData.width * imageData.height;
-  for(let i=0;i<data.length;i+=4) sum+=data[i];
-  return sum/px;
+  const counts = { red: 0, green: 0, blue: 0, counts: 0};
+  let pixels = [];
+  const sz = data.length / 4;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const brightness = r + g + b;
+    
+    if (r > 210 || g > 210 || b > 210)
+      counts.counts++;
+    pixels.push({ r, g, b, brightness });
+  }
+
+
+  for (const { r, g, b } of pixels) {   
+    if (r > 210)
+      counts.red++;
+    if (g > 210)
+      counts.green++;
+    if (b > 210)
+      counts.blue++;
+    
+  }
+
+  // log(`counts: R=${counts.red}, G=${counts.green}, B=${counts.blue}, cnt=${counts.counts}`)
+  // Выбираем цвет с максимумом
+  let maxColor = "off";
+  let maxCount = 0;
+  let sm = 0;
+  for (const [color, count] of Object.entries(counts)) {
+    if (color === "counts")
+      continue;
+    if (count < counts.counts * 0.85)
+      continue;
+    sm++;
+    if (count > maxCount) {
+      maxCount = count;
+      maxColor = color;
+    }
+  }
+  if (sm === 3){
+    maxColor = "white";
+  }
+
+  if (counts.counts < sz * 0.85)
+    return { r: 0, g: 0, b: 0 };
+
+  switch (maxColor) {
+    case "red": return { r: 255, g: 0, b: 0 };
+    case "green": return { r: 0, g: 255, b: 0 };
+    case "blue": return { r: 0, g: 0, b: 255 };
+    case "white": return { r: 255, g: 255, b: 255 };
+    default: return { r: 0, g: 0, b: 0 }; // off
+  }
+}
+
+
+
+
+
+
+
+function calcBrightness(rgb){ return (rgb.r+rgb.g+rgb.b)/3; }
+
+async function startCamera(){
+  if(running) return;
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:"environment", width:1280, height:720 }, audio:false });
+  }catch(err){ statusEl.textContent='Ошибка доступа к камере: '+(err.message||err.name); return; }
+  video.srcObject = stream;
+  try{ await video.play(); }catch(e){}
+  overlay.width = video.videoWidth || 640;
+  overlay.height = video.videoHeight || 480;
+  if(!roi) roi={x:overlay.width/2, y:overlay.height/2, size: 128};
+  running=true;
+  statusEl.textContent='Камера запущена';
+  requestAnimationFrame(loop);
 }
 
 function loop(){
   if(!running) return;
+  ctx.drawImage(video,0,0,overlay.width,overlay.height);
+  const s = roi.size;
+  const rx = roi.x-s/2, ry = roi.y-s/2;
+  ctx.strokeStyle='lime'; ctx.lineWidth=2;
+  ctx.strokeRect(rx,ry,s,s);
 
-  function frame(){
-    rafId = requestAnimationFrame(frame);
+  // --- Определение текущего цвета ---
+  const img = ctx.getImageData(rx, ry, s, s);
+  const rgb = detectColor(img);
+  const bright = calcBrightness(rgb);
 
-    ctx.drawImage(video,0,0,overlay.width,overlay.height);
-
-    const s = roi ? roi.size : 64;
-    const rx = (roi ? roi.x : overlay.width/2) - s/2;
-    const ry = (roi ? roi.y : overlay.height/2) - s/2;
-
-    ctx.strokeStyle='lime'; ctx.lineWidth=2;
-    ctx.strokeRect(rx,ry,s,s);
-
-    try{
-      const img = ctx.getImageData(rx,ry,s,s);
-      const brightness = detectBrightness(img);
-      smoothVal = smoothVal*(1-smoothing) + brightness*smoothing;
-
-      ctx.fillStyle='rgba(255,255,255,0.08)';
-      ctx.fillRect(6,overlay.height-22,Math.min(overlay.width-12,(smoothVal/255)*(overlay.width-12)),16);
-      ctx.fillStyle='white'; ctx.font='48px monospace';
-      ctx.fillText('B: '+Math.round(smoothVal),8,overlay.height-8);
-
-      if(!transmissionActive) return;
-
-      const thr = calibratedThreshold !== null ? calibratedThreshold : 160;
-      const high = smoothVal >= thr;
-
-      if(high !== isOn){
-        const nowTime = Date.now();
-        const durationSec = (nowTime - lastTransitionTime)/1000;
-
-        blinkEvents.push({
-          state: isOn ? 'горит' : 'не горит',
-          duration: durationSec
-        });
-
-        lastTransitionTime = nowTime;
-        isOn = high;
-
-        log(`${isOn ? 'Светодиод горит' : 'Светодиод не горит'}, длительность предыдущего состояния: ${durationSec.toFixed(2)} сек`);
-      }
-    } catch(e){ console.warn('getImageData error',e); }
+  let colorName = "off";
+  if(bright > 40){ // если не слишком темно
+    if(rgb.r > rgb.g && rgb.r > rgb.b) colorName = "red";
+    else if(rgb.g > rgb.r && rgb.g > rgb.b) colorName = "green";
+    else if(rgb.b > rgb.r && rgb.b > rgb.g) colorName = "blue";
+    else colorName = "white";
   }
+  currentColorEl.textContent = `${colorName} (R=${rgb.r}, G=${rgb.g}, B=${rgb.b})`;
+  currentColorBox.style.backgroundColor = `rgb(${rgb.r},${rgb.g},${rgb.b})`;
 
-  frame();
-}
 
-// --- СИНХРОНИЗАЦИЯ ---
-function startSync() {
-  if (syncing) return;
-  syncing = true;
-  log('Синхронизация: измеряем минимум (светодиод выключен, 5 сек)...');
 
-  minBrightness = Infinity;
-  maxBrightness = -Infinity;
 
-  let phase = 0;
-  let phaseTime = Date.now();
 
-  function syncStep() {
-    const now = Date.now();
-    const elapsed = (now - phaseTime) / 1000;
-
-    if (phase === 0) {
-      if (smoothVal < minBrightness) minBrightness = smoothVal;
-      if (elapsed >= 5) {
-        phase = 1;
-        phaseTime = now;
-        log('Теперь включите светодиод. Измеряем максимум (5 сек)...');
-      }
-    } else if (phase === 1) {
-      if (smoothVal > maxBrightness) maxBrightness = smoothVal;
-      if (elapsed >= 5) {
-        calibratedThreshold = (minBrightness + maxBrightness) / 2;
-        log(`Синхронизация завершена. minB=${minBrightness.toFixed(1)}, maxB=${maxBrightness.toFixed(1)}, порог=${calibratedThreshold.toFixed(1)}`);
-        syncing = false;
-        return;
-      }
+  // --- Если идёт запись, фиксируем смену цвета ---
+  if (transmissionActive) {
+    if (colorEvents.length && Date.now() - lastColorTime > 30000){
+      transmissionActive = false;
+      log("Не удалось распознать пакет");
+      colorEvents.length = 0;
     }
-    requestAnimationFrame(syncStep);
+    else if (colorName.toLowerCase() !== lastColorRecorded) {
+      const now = Date.now();
+      const duration = now - lastColorTime;
+      
+      if (duration > 300) {
+        colorEvents.push({ level: fromColorToLevel[lastColorRecorded], duration: duration / 2 });
+        log(`event: ${lastColorRecorded} level=${fromColorToLevel[lastColorRecorded]}, duration=${duration / 2}`);
+      }
+
+      lastColorRecorded = colorName.toLowerCase();
+      lastColorTime = now;
+
+
+
+
+
+
+      // Пытаемся распознать пакет
+      
+      // Создаём массив для результата
+      const decodedMessages = [];
+
+      // Создаём декодер с callback
+      const decoder = new datapack.Decoder((payload, length) => {
+      // payload — Uint8Array с исходными данными
+      decodedMessages.push(new TextDecoder().decode(payload));
+      });
+
+      // Feed всех изменений из signalBuffer в декодер
+      for (const change of colorEvents) {
+         decoder.feed(change);
+      }
+
+      // После этого decodedMessages[0] содержит исходную строку
+      if (decodedMessages.length > 0) {
+          log("Раскодированное сообщение:" + decodedMessages[0]);
+          transmissionActive = false;
+          colorEvents.length = 0;
+      } 
+
+  
+    }
   }
-  syncStep();
+
+
+  requestAnimationFrame(loop);
 }
 
-// Запускаем камеру сразу при загрузке страницы
-startCamera();
 
-// Кнопки
+
 startTransmissionBtn.addEventListener('click',()=>{
-  transmissionActive = true;
-  log('Начата передача');
-  lastTransitionTime = Date.now();
+  transmissionActive=true;
+  blinkEvents=[];
+  lastTransitionTime=Date.now();
+  lastColor=0;
+  log('Начата запись сигналов');
 });
 
-syncBtn.addEventListener('click', startSync);
 
-// останавливаем камеру при закрытии страницы
-window.addEventListener('beforeunload',()=>{ 
-  if(stream) { stream.getTracks().forEach(t=>t.stop()); } 
-});
+
+
+// // --- СИНХРОНИЗАЦИЯ ---
+// syncBtn.addEventListener('click', async () => {
+//   log('Начата синхронизация...');
+  
+//   const states = ['Выкл', 'Белый', 'Выкл','Красный', 'Выкл','Синий', 'Выкл','Зелёный'];
+//   const colorSamples = {};
+//   const thresholdMargin = 100; 
+//   let prevColor = null;
+//   let stateIndex = 0;
+//   const roiSamples = 1; 
+
+//   function averageColor(samples) {
+//     const avg = samples.reduce((acc, val) => {
+//       acc.r += val.r; acc.g += val.g; acc.b += val.b;
+//       return acc;
+//     }, { r: 0, g: 0, b: 0 });
+//     avg.r = Math.round(avg.r / samples.length);
+//     avg.g = Math.round(avg.g / samples.length);
+//     avg.b = Math.round(avg.b / samples.length);
+//     return avg;
+//   }
+
+//   function colorDelta(c1, c2) {
+//     return Math.abs(c1.r - c2.r) + Math.abs(c1.g - c2.g) + Math.abs(c1.b - c2.b);
+//   }
+
+//   function brightness(rgb) {
+//     return rgb.r + rgb.g + rgb.b;
+//   }
+
+//   while (stateIndex < states.length) {
+//     const samples = [];
+//     for (let i = 0; i < roiSamples; i++) {
+//       const img = ctx.getImageData(roi.x - roi.size / 2, roi.y - roi.size / 2, roi.size, roi.size);
+//       samples.push(detectColor(img));
+//       await new Promise(r => setTimeout(r, 1));
+//     }
+//     const rgb = averageColor(samples);
+//     const bright = brightness(rgb);
+
+//     if (!prevColor) {
+//       prevColor = rgb;
+//       colorSamples[states[stateIndex]] = { ...rgb };
+//       log(`Состояние ${states[stateIndex]} захвачено: R=${rgb.r}, G=${rgb.g}, B=${rgb.b}`);
+//       stateIndex++;
+//     } else {
+//       const delta = colorDelta(rgb, prevColor);
+//       if (delta > thresholdMargin) {
+//         colorSamples[states[stateIndex]] = { ...rgb };
+//         log(`Состояние ${states[stateIndex]} захвачено: R=${rgb.r}, G=${rgb.g}, B=${rgb.b}`);
+//         stateIndex++;
+//       }
+//       prevColor = rgb;
+//     }
+//     await new Promise(r => setTimeout(r, 50));
+//   }
+
+//   log('Синхронизация завершена. Пороговые значения цветов:');
+//   for (const state in colorSamples) {
+//     const rgb = colorSamples[state];
+//     log(`${state}: R=${rgb.r}, G=${rgb.g}, B=${rgb.b}`);
+//   }
+// });
+
+startCamera();
 </script>
 </body>
 </html>

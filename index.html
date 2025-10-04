@@ -78,6 +78,11 @@ const colorNames = {
   0: 'off'
 };
 
+const defaultProtocolConfig = new datapack.ProtocolConfig();
+const textDecoder = new TextDecoder();
+const DECODER_DRIFT = 0.6;
+const MIN_EVENT_DURATION_MS = 100;
+
 let stream = null;
 let running = false;
 let roi = null;
@@ -91,6 +96,93 @@ let lastColor = 0;
 let colorEvents = [];
 let lastColorRecorded = "off";
 let lastColorTime = Date.now();
+let pendingDecode = false;
+
+function msToMicros(ms) {
+  return Math.max(1, Math.round(ms * 1000));
+}
+
+function attemptDecode(finalOffDurationMs = null) {
+  if (!colorEvents.length) {
+    return false;
+  }
+
+  const filteredEvents = colorEvents.filter(evt => evt.durationMs >= MIN_EVENT_DURATION_MS);
+  if (!filteredEvents.length) {
+    log('Недостаточно длинных событий для декодирования');
+    return false;
+  }
+
+  const events = filteredEvents.map(evt => ({
+    level: evt.level,
+    durationMicros: msToMicros(evt.durationMs)
+  }));
+
+  if (typeof finalOffDurationMs === 'number' && finalOffDurationMs >= MIN_EVENT_DURATION_MS) {
+    events.push({
+      level: fromColorToLevel["off"],
+      durationMicros: msToMicros(finalOffDurationMs)
+    });
+  }
+
+  const markEvents = events.filter(evt => evt.level !== fromColorToLevel["off"]);
+  if (markEvents.length < 2) {
+    return false;
+  }
+
+  const preambleMarks = markEvents.filter(evt => evt.level === defaultProtocolConfig.preambleColor);
+  let unitDurationMicros;
+  if (preambleMarks.length) {
+    const preambleDuration = Math.max(...preambleMarks.map(evt => evt.durationMicros));
+    unitDurationMicros = Math.round(preambleDuration / defaultProtocolConfig.preambleMarkUnits);
+  } else {
+    const minMark = Math.min(...markEvents.map(evt => evt.durationMicros));
+    unitDurationMicros = Math.round(minMark);
+  }
+
+  if (!Number.isFinite(unitDurationMicros) || unitDurationMicros <= 0) {
+    return false;
+  }
+
+  unitDurationMicros = Math.max(200, unitDurationMicros);
+
+  const decoderConfig = {
+    unitDurationMicros,
+    allowedDriftFraction: DECODER_DRIFT,
+    preambleMarkUnits: defaultProtocolConfig.preambleMarkUnits,
+    preambleSpaceUnits: defaultProtocolConfig.preambleSpaceUnits,
+    symbolMarkUnits: defaultProtocolConfig.symbolMarkUnits,
+    separatorUnits: defaultProtocolConfig.separatorUnits,
+    frameGapUnits: defaultProtocolConfig.frameGapUnits,
+    preambleColor: defaultProtocolConfig.preambleColor,
+    maxPayloadBytes: defaultProtocolConfig.maxPayloadBytes,
+    magic: defaultProtocolConfig.magic,
+    ender: defaultProtocolConfig.ender,
+    version: defaultProtocolConfig.version
+  };
+
+  const decodedMessages = [];
+  const decoder = new datapack.Decoder((payload, length) => {
+    decodedMessages.push(textDecoder.decode(payload.subarray(0, length)));
+  }, null, decoderConfig);
+
+  for (const change of events) {
+    decoder.feed({ level: change.level, duration: change.durationMicros });
+  }
+
+  if (!decodedMessages.length) {
+    return false;
+  }
+
+  const message = decodedMessages.join('\n');
+  log('Раскодированное сообщение: ' + message);
+  decodedEl.textContent = message;
+  statusEl.textContent = 'Сообщение получено';
+  transmissionActive = false;
+  pendingDecode = false;
+  colorEvents.length = 0;
+  return true;
+}
 
 
 function log(msg){
@@ -220,52 +312,47 @@ function loop(){
 
   // --- Если идёт запись, фиксируем смену цвета ---
   if (transmissionActive) {
-    if (colorEvents.length && Date.now() - lastColorTime > 30000){
+    const now = Date.now();
+    if (colorEvents.length && now - lastColorTime > 30000){
       transmissionActive = false;
+      pendingDecode = false;
       log("Не удалось распознать пакет");
       colorEvents.length = 0;
-    }
-    else if (colorName.toLowerCase() !== lastColorRecorded) {
-      const now = Date.now();
-      const duration = now - lastColorTime;
-      
-      if (duration > 150) {
-        colorEvents.push({ level: fromColorToLevel[lastColorRecorded], duration: duration });
-        log(`event: ${lastColorRecorded} level=${fromColorToLevel[lastColorRecorded]}, duration=${duration}`);
+      statusEl.textContent = 'Пакет не распознан';
+      decodedEl.textContent = '—';
+    } else {
+      const colorLower = colorName.toLowerCase();
+      if (colorLower !== lastColorRecorded) {
+        const duration = now - lastColorTime;
+        const level = fromColorToLevel[lastColorRecorded];
+        if (level !== undefined) {
+          if (duration >= MIN_EVENT_DURATION_MS) {
+            colorEvents.push({ level, durationMs: duration });
+            log(`event: ${lastColorRecorded} level=${level}, duration=${duration.toFixed(1)}мс`);
+          } else {
+            log(`игнор: ${lastColorRecorded} слишком коротко (${duration.toFixed(1)}мс)`);
+          }
+        }
+
+        lastColorRecorded = colorLower;
+        lastColorTime = now;
+        pendingDecode = colorLower === 'off';
+        if (colorLower === 'off') {
+          statusEl.textContent = 'Ожидание завершения пакета';
+        } else {
+          statusEl.textContent = 'Фиксирован цвет: ' + colorLower;
+        }
       }
 
-      lastColorRecorded = colorName.toLowerCase();
-      lastColorTime = now;
-
-
-
-
-
-
-      // Пытаемся распознать пакет
-      
-      // Создаём массив для результата
-      const decodedMessages = [];
-
-      // Создаём декодер с callback
-      const decoder = new datapack.Decoder((payload, length) => {
-      // payload — Uint8Array с исходными данными
-      decodedMessages.push(new TextDecoder().decode(payload));
-      });
-
-      // Feed всех изменений из signalBuffer в декодер
-      for (const change of colorEvents) {
-         decoder.feed(change);
+      if (pendingDecode) {
+        const offDuration = Date.now() - lastColorTime;
+        if (offDuration > MIN_EVENT_DURATION_MS * 2) {
+          const decoded = attemptDecode(offDuration);
+          if (!decoded) {
+            pendingDecode = false;
+          }
+        }
       }
-
-      // После этого decodedMessages[0] содержит исходную строку
-      if (decodedMessages.length > 0) {
-          log("Раскодированное сообщение:" + decodedMessages[0]);
-          transmissionActive = false;
-          colorEvents.length = 0;
-      } 
-
-  
     }
   }
 
@@ -280,6 +367,12 @@ startTransmissionBtn.addEventListener('click',()=>{
   blinkEvents=[];
   lastTransitionTime=Date.now();
   lastColor=0;
+  colorEvents.length = 0;
+  lastColorRecorded = 'off';
+  lastColorTime = Date.now();
+  pendingDecode = false;
+  decodedEl.textContent = '—';
+  statusEl.textContent = 'Запись активна';
   log('Начата запись сигналов');
 });
 

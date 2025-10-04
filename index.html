@@ -14,6 +14,8 @@ video, canvas{background:#000;border-radius:8px;max-width:100%;}
 .box{padding:12px;background:#fff;border-radius:10px;box-shadow:0 2px 8px rgba(12,20,40,0.06)}
 #log{height:140px;overflow:auto;background:#0b1220;color:#dff3ff;padding:8px;border-radius:8px;font-family:monospace;font-size:13px}
 #decoded{height:140px;overflow:auto;background:#f0f4ff;color:#0b1220;padding:8px;border-radius:8px;font-family:monospace;font-size:13px;margin-top:8px}
+#unitDurationInput{width:100%;padding:6px;border-radius:6px;border:1px solid #ccc;margin-top:4px}
+label[for="unitDurationInput"]{display:block;margin-top:8px;font-weight:500;font-size:14px}
 button{padding:8px 12px;border-radius:8px;border:0;background:#2563eb;color:#fff;cursor:pointer}
 button.secondary{background:#e6eefc;color:#0b1220}
 small{color:#39424a}
@@ -35,6 +37,8 @@ small{color:#39424a}
   <div class="box" style="width:360px">
     <h2 style="margin-top:0">Информация</h2>
     <div id="status">—</div>
+  <label for="unitDurationInput">Длительность единицы (мс)</label>
+  <input type="number" id="unitDurationInput" min="50" step="10" value="600">
 
     <h3 style="margin-bottom:6px">Текущий цвет</h3>
     <div id="currentColor">—</div>
@@ -61,6 +65,7 @@ const logEl = document.getElementById('log');
 const decodedEl = document.getElementById('decoded');
 const currentColorEl = document.getElementById('currentColor');
 const currentColorBox = document.getElementById('currentColorBox');
+const unitDurationInput = document.getElementById('unitDurationInput');
 
 const fromColorToLevel = {
   "off" : 0,
@@ -78,10 +83,43 @@ const colorNames = {
   0: 'off'
 };
 
-const defaultProtocolConfig = new datapack.ProtocolConfig();
+let defaultProtocolConfig = new datapack.ProtocolConfig();
+const DEFAULT_UNIT_DURATION = defaultProtocolConfig.unitDurationMicros || 600;
 const textDecoder = new TextDecoder();
 const DECODER_DRIFT = 0.6;
 const MIN_EVENT_DURATION_MS = 100;
+
+let currentUnitDuration = DEFAULT_UNIT_DURATION;
+
+function sanitizeUnitDuration(value){
+  const numeric = Number(value);
+  if(!Number.isFinite(numeric) || numeric <= 0){
+    return DEFAULT_UNIT_DURATION;
+  }
+  return Math.min(10000, Math.max(50, Math.round(numeric)));
+}
+
+function applyUnitDuration(newValue, logChange = false){
+  const sanitized = sanitizeUnitDuration(newValue);
+  currentUnitDuration = sanitized;
+  unitDurationInput.value = sanitized;
+  const updated = defaultProtocolConfig.clone();
+  updated.unitDurationMicros = sanitized;
+  defaultProtocolConfig = new datapack.ProtocolConfig(updated);
+  if (logChange) {
+    log('Базовая длительность единицы установлена: ' + sanitized + ' мс');
+  }
+}
+
+unitDurationInput.addEventListener('change', ()=>applyUnitDuration(unitDurationInput.value, true));
+unitDurationInput.addEventListener('blur', ()=>applyUnitDuration(unitDurationInput.value));
+unitDurationInput.addEventListener('keyup', (event)=>{
+  if(event.key === 'Enter'){
+    applyUnitDuration(unitDurationInput.value, true);
+  }
+});
+
+applyUnitDuration(unitDurationInput.value);
 
 let stream = null;
 let running = false;
@@ -141,10 +179,10 @@ function attemptDecode(finalOffDurationMs = null) {
   }
 
   if (!Number.isFinite(unitDurationMicros) || unitDurationMicros <= 0) {
-    return false;
+    unitDurationMicros = currentUnitDuration;
   }
 
-  unitDurationMicros = Math.max(200, unitDurationMicros);
+  unitDurationMicros = Math.max(50, Math.round(unitDurationMicros));
 
   const decoderConfig = {
     unitDurationMicros,

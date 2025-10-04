@@ -20,6 +20,8 @@ input[type=text]{width:100%;padding:6px;border-radius:6px;border:1px solid #ccc;
 <div class="box">
   <label>Введите сообщение для передачи:</label>
   <input type="text" id="messageInput" placeholder="Введите текст">
+  <label for="unitDurationInput">Длительность единицы (мс):</label>
+  <input type="number" id="unitDurationInput" min="50" step="10" value="600">
   <button id="startBtn">Начать отправку</button>
   <button id="syncBtn">Запустить синхронизацию</button>
 </div>
@@ -36,6 +38,7 @@ const ctx = canvas.getContext('2d');
 const startBtn = document.getElementById('startBtn');
 const syncBtn = document.getElementById('syncBtn');
 const messageInput = document.getElementById('messageInput');
+const unitDurationInput = document.getElementById('unitDurationInput');
 const signalLogEl = document.getElementById('signalLog');
 
 const colorMap = {
@@ -55,6 +58,32 @@ const colorNames = {
 };
 
 let sending = false;
+const DEFAULT_UNIT_DURATION = 600;
+let currentUnitDuration = DEFAULT_UNIT_DURATION;
+
+function sanitizeUnitDuration(value){
+  const numeric = Number(value);
+  if(!Number.isFinite(numeric) || numeric <= 0){
+    return DEFAULT_UNIT_DURATION;
+  }
+  return Math.min(10000, Math.max(50, Math.round(numeric)));
+}
+
+function updateUnitDuration(){
+  const sanitized = sanitizeUnitDuration(unitDurationInput.value);
+  currentUnitDuration = sanitized;
+  unitDurationInput.value = sanitized;
+}
+
+unitDurationInput.addEventListener('change', updateUnitDuration);
+unitDurationInput.addEventListener('blur', updateUnitDuration);
+unitDurationInput.addEventListener('keyup', (event)=>{
+  if(event.key === 'Enter'){
+    updateUnitDuration();
+  }
+});
+
+updateUnitDuration();
 
 function drawColor(level){
   ctx.fillStyle = colorMap[level] || 'black';
@@ -69,7 +98,9 @@ async function transmitMessage(message){
   sending = true;
   signalLogEl.innerHTML = ''; // очистка списка
 
-  const encoder = new datapack.Encoder();
+  updateUnitDuration();
+  const unitDuration = currentUnitDuration;
+  const encoder = new datapack.Encoder({ unitDurationMicros: unitDuration });
   const payload = new TextEncoder().encode(message);
   const signalBuffer = new datapack.SignalBuffer();
   const success = encoder.encode(payload, payload.length, signalBuffer);
@@ -86,7 +117,7 @@ async function transmitMessage(message){
 
      for (const change of signalBuffer) {
         // newBuffer.push({level: 1, duration: 30});
-        newBuffer.push({level: change.level, duration: change.duration - 100})
+    newBuffer.push({level: change.level, duration: Math.max(1, change.duration - 100)})
     }
     
   console.log(newBuffer);
@@ -95,10 +126,10 @@ async function transmitMessage(message){
     const decodedMessages = [];
 
     // Создаём декодер с callback
-    const decoder = new datapack.Decoder((payload, length) => {
+  const decoder = new datapack.Decoder((payload, length) => {
     // payload — Uint8Array с исходными данными
     decodedMessages.push(new TextDecoder().decode(payload));
-    });
+  }, null, { unitDurationMicros: unitDuration });
 
     // Feed всех изменений из signalBuffer в декодер
     for (const change of newBuffer) {

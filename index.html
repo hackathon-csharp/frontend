@@ -136,7 +136,7 @@ function detectColor(imageData) {
     
   }
 
-  log(`counts: R=${counts.red}, G=${counts.green}, B=${counts.blue}, cnt=${counts.counts}`)
+  //log(`counts: R=${counts.red}, G=${counts.green}, B=${counts.blue}, cnt=${counts.counts}`)
   // Выбираем цвет с максимумом
   let maxColor = "off";
   let maxCount = 0;
@@ -230,8 +230,8 @@ function loop(){
       const duration = now - lastColorTime;
       
       if (duration > 150) {
-        colorEvents.push({ level: fromColorToLevel[lastColorRecorded], duration: duration / 2 });
-        log(`event: ${lastColorRecorded} level=${fromColorToLevel[lastColorRecorded]}, duration=${duration / 2}`);
+        colorEvents.push({ level: fromColorToLevel[lastColorRecorded], duration: duration });
+        log(`event: ${lastColorRecorded} level=${fromColorToLevel[lastColorRecorded]}, duration=${duration}`);
       }
 
       lastColorRecorded = colorName.toLowerCase();

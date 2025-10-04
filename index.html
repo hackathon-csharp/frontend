@@ -44,7 +44,7 @@
       width: 100%;
       border-radius: 12px;
       background: #000;
-      display: block;
+      display: none;
     }
     canvas {
       width: 100%;
@@ -165,26 +165,33 @@
       [LightLevel.White]: 'Белый',
     };
 
-    const UNIT_DURATION_MS = 600;
-    const MIN_EVENT_DURATION_MS = 90;
-    const OFF_DECODE_DELAY = UNIT_DURATION_MS * 1.6;
-    const INACTIVITY_RESET_MS = 30000;
+  const DEFAULT_UNIT_DURATION_MS = 600;
+  const MIN_EVENT_DURATION_FLOOR = 30;
+  const MAX_OBSERVED_DURATIONS = 48;
+  const MAX_SAMPLED_DURATION_MS = 2500;
     const ROI_DEFAULT_SIZE = 160;
 
     let lastColor = 'off';
-    let lastChange = Date.now();
-    let lastEventTimestamp = Date.now();
+  let lastChange = performance.now();
+  let lastEventTimestamp = performance.now();
     let pendingOffDecode = false;
     let roi = null;
 
-    let lastBufferHex = '';
-    let lastDecodedText = '';
+  let lastBufferHex = '';
+  let lastDecodedText = '';
+
+  let estimatedUnitMs = DEFAULT_UNIT_DURATION_MS;
+  let minEventDurationMs = 90;
+  let offDecodeDelayMs = DEFAULT_UNIT_DURATION_MS * 1.6;
+  let inactivityResetMs = 30000;
+  const observedDurations = [];
+  let lastTimingAnnouncement = 0;
 
     const textDecoder = new TextDecoder();
 
-    datapack.resetDecoder();
-    datapack.setSignalDuration(UNIT_DURATION_MS);
-    datapack.setMinDuration(MIN_EVENT_DURATION_MS);
+  datapack.resetDecoder();
+  datapack.setSignalDuration(DEFAULT_UNIT_DURATION_MS);
+  datapack.setMinDuration(minEventDurationMs);
 
     datapack.setOnPacketReceived((pkg) => {
       log(`Пакет принят (${pkg.length} байт)`);
@@ -202,17 +209,83 @@
       }
     }
 
+    function setStatus(message, tone = 'warn') {
+      const suffix = Number.isFinite(estimatedUnitMs) ? ` · ≈${Math.round(estimatedUnitMs)} мс` : '';
+      statusEl.textContent = `${message}${suffix}`;
+      switch (tone) {
+        case 'ok':
+          statusEl.className = 'status-ok';
+          break;
+        case 'error':
+          statusEl.className = 'status-error';
+          break;
+        default:
+          statusEl.className = 'status-warn';
+          break;
+      }
+    }
+
+    function recomputeTiming() {
+      if (!observedDurations.length) {
+        return;
+      }
+
+      const sorted = observedDurations.slice().sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)];
+
+      if (!Number.isFinite(median) || median <= 0) {
+        return;
+      }
+
+      const newUnit = Math.max(50, Math.min(1500, median));
+      const newMin = Math.max(MIN_EVENT_DURATION_FLOOR, Math.round(newUnit * 0.35));
+      const decoderMin = Math.max(20, Math.round(newUnit * 0.25));
+      const newOffDelay = Math.max(newUnit * 1.3, decoderMin * 3);
+      const newInactivity = Math.max(newUnit * 40, 8000);
+
+      const changed =
+        Math.abs(newUnit - estimatedUnitMs) > 6 ||
+        Math.abs(newMin - minEventDurationMs) > 6 ||
+        Math.abs(newOffDelay - offDecodeDelayMs) > 30;
+
+      estimatedUnitMs = newUnit;
+      minEventDurationMs = newMin;
+      offDecodeDelayMs = newOffDelay;
+      inactivityResetMs = newInactivity;
+      datapack.setMinDuration(decoderMin);
+
+      if (changed) {
+        const now = performance.now();
+        if (now - lastTimingAnnouncement > 2500) {
+          log(`Адаптация таймингов: unit≈${Math.round(newUnit)} мс, порог≥${minEventDurationMs} мс`, 'warn');
+          lastTimingAnnouncement = now;
+        }
+      }
+    }
+
+    function observeDuration(durationMs) {
+      if (!Number.isFinite(durationMs) || durationMs <= 0 || durationMs > MAX_SAMPLED_DURATION_MS) {
+        return;
+      }
+      observedDurations.push(durationMs);
+      if (observedDurations.length > MAX_OBSERVED_DURATIONS) {
+        observedDurations.shift();
+      }
+      recomputeTiming();
+    }
+
     function resetDecoderState(reason) {
       datapack.resetDecoder();
       lastBufferHex = '';
       lastDecodedText = '';
       bufferEl.textContent = '—';
       decodedEl.textContent = '—';
+      lastChange = performance.now();
+      lastEventTimestamp = performance.now();
       if (reason) {
         log(reason, 'warn');
       }
-      statusEl.textContent = 'Ожидание сигнала';
-      statusEl.className = 'status-warn';
+      setStatus('Ожидание сигнала');
     }
 
     function getTrimmedPayload() {
@@ -221,15 +294,23 @@
         return null;
       }
 
-      let usable = data.length;
-      while (usable > 0 && data[usable - 1] === 0) {
-        usable -= 1;
+      let start = 0;
+      while (start < data.length && data[start] === 0) {
+        start += 1;
       }
-      if (usable === 0) {
+      if (start >= data.length) {
         return null;
       }
 
-      const payload = data.subarray(0, usable);
+      let end = start;
+      while (end < data.length && data[end] !== 0) {
+        end += 1;
+      }
+      if (end < data.length && data[end] === 0) {
+        end += 1; // include first zero terminator
+      }
+
+      const payload = data.subarray(start, end);
       const hex = Array.from(payload, (b) => b.toString(16).padStart(2, '0')).join(' ');
       let text = '';
       try {
@@ -261,8 +342,7 @@
       if (!result) {
         if (forceLog) {
           log('Пакет не распознан', 'error');
-          statusEl.textContent = 'Пакет не распознан';
-          statusEl.className = 'status-error';
+          setStatus('Пакет не распознан', 'error');
         }
         return;
       }
@@ -270,29 +350,30 @@
       const hasText = typeof result.text === 'string' && result.text.length > 0;
       if (hasText && result.text !== lastDecodedText) {
         decodedEl.textContent = result.text;
-        statusEl.textContent = 'Сообщение получено';
-        statusEl.className = 'status-ok';
+        setStatus('Сообщение получено', 'ok');
         log(`Раскодированное сообщение (${result.payload.length} байт): "${result.text}"`);
         log(`HEX: ${result.hex}`);
         lastDecodedText = result.text;
       } else if (forceLog && !hasText) {
         log('Пакет не распознан', 'error');
-        statusEl.textContent = 'Пакет не распознан';
-        statusEl.className = 'status-error';
+        setStatus('Пакет не распознан', 'error');
       }
     }
 
     function recordEvent(level, durationMs) {
-      const normalizedDuration = Math.max(MIN_EVENT_DURATION_MS, Math.round(durationMs));
+      const normalizedDuration = Math.max(minEventDurationMs, Math.round(durationMs));
       try {
         datapack.feed({ value: level, duration: normalizedDuration });
       } catch (error) {
         log(`Ошибка feed: ${error && error.message ? error.message : error}`, 'error');
         return;
       }
-      lastEventTimestamp = Date.now();
+      lastEventTimestamp = performance.now();
       const label = colorNames[level] || `Level ${level}`;
       log(`Событие: ${label} (${normalizedDuration} мс)`);
+      if (level !== LightLevel.Off || normalizedDuration < estimatedUnitMs * 2.5) {
+        observeDuration(normalizedDuration);
+      }
       const payload = updateBuffer();
       if (level === LightLevel.Off) {
         attemptDecode(true, payload);
@@ -380,8 +461,7 @@
     });
 
     async function startCamera() {
-      statusEl.textContent = 'Запрашиваем доступ к камере…';
-      statusEl.className = 'status-warn';
+      setStatus('Запрашиваем доступ к камере…');
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
@@ -402,13 +482,11 @@
             size: ROI_DEFAULT_SIZE
           };
         }
-        statusEl.textContent = 'Камера запущена';
-        statusEl.className = 'status-ok';
+        setStatus('Камера запущена', 'ok');
         requestAnimationFrame(loop);
       } catch (error) {
         const msg = error && error.message ? error.message : error;
-        statusEl.textContent = 'Ошибка доступа к камере: ' + msg;
-        statusEl.className = 'status-error';
+        setStatus('Ошибка доступа к камере: ' + msg, 'error');
         log('Ошибка доступа к камере: ' + msg, 'error');
       }
     }
@@ -441,23 +519,28 @@
       currentColorBox.textContent = level === LightLevel.Off ? '—' : '';
       currentColorEl.textContent = `${colorNames[level]} | R${analysis.r} G${analysis.g} B${analysis.b}`;
 
-      const now = Date.now();
+      const now = performance.now();
       if (mapped !== lastColor) {
         const duration = now - lastChange;
         const prevLevel = fromColorToLevel[lastColor];
-        if (prevLevel !== undefined && duration >= MIN_EVENT_DURATION_MS) {
+        if (prevLevel !== undefined && duration >= minEventDurationMs) {
           recordEvent(prevLevel, duration);
+        } else if (prevLevel !== undefined && duration > MIN_EVENT_DURATION_FLOOR) {
+          observeDuration(duration);
+          const readablePrev = colorNames[prevLevel] || lastColor;
+          log(`игнор: ${readablePrev} слишком коротко (${duration.toFixed(1)}мс)`);
         }
         lastColor = mapped;
         lastChange = now;
         pendingOffDecode = mapped === 'off';
-        if (!pendingOffDecode) {
-          statusEl.textContent = `Фиксирован цвет: ${colorNames[level]}`;
-          statusEl.className = 'status-warn';
+        if (pendingOffDecode) {
+          setStatus('Ожидание завершения пакета…');
+        } else {
+          setStatus(`Фиксирован цвет: ${colorNames[level]}`);
         }
       } else if (pendingOffDecode) {
         const offDuration = now - lastChange;
-        if (offDuration >= OFF_DECODE_DELAY) {
+        if (offDuration >= offDecodeDelayMs) {
           recordEvent(LightLevel.Off, offDuration);
           pendingOffDecode = false;
           lastColor = 'off';
@@ -465,7 +548,7 @@
         }
       }
 
-      if (now - lastEventTimestamp > INACTIVITY_RESET_MS && (lastBufferHex || lastDecodedText)) {
+      if (now - lastEventTimestamp > inactivityResetMs && (lastBufferHex || lastDecodedText)) {
         resetDecoderState('Сброс после длительного отсутствия сигнала');
       }
 

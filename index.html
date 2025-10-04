@@ -202,71 +202,86 @@ overlay.addEventListener('click',(e)=>{
 
 function detectColor(imageData) {
   const data = imageData.data;
-  const counts = { red: 0, green: 0, blue: 0, counts: 0};
-  let pixels = [];
-  const sz = data.length / 4;
+  let sumR = 0, sumG = 0, sumB = 0;
+  let brightCount = 0;
 
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i];
     const g = data[i + 1];
     const b = data[i + 2];
-    const brightness = r + g + b;
-    
-    if (r > 210 || g > 210 || b > 210)
-      counts.counts++;
-    pixels.push({ r, g, b, brightness });
+    const brightness = (r + g + b) / 3;
+
+    if (brightness < 30) {
+      continue;
+    }
+
+    sumR += r;
+    sumG += g;
+    sumB += b;
+    brightCount++;
   }
 
-
-  for (const { r, g, b } of pixels) {   
-    if (r > 210)
-      counts.red++;
-    if (g > 210)
-      counts.green++;
-    if (b > 210)
-      counts.blue++;
-    
+  if (!brightCount) {
+    return { r: 0, g: 0, b: 0, brightness: 0, dominant: 'off' };
   }
 
-  //log(`counts: R=${counts.red}, G=${counts.green}, B=${counts.blue}, cnt=${counts.counts}`)
-  // Выбираем цвет с максимумом
-  let maxColor = "off";
-  let maxCount = 0;
-  let sm = 0;
-  for (const [color, count] of Object.entries(counts)) {
-    if (color === "counts")
-      continue;
-    if (count < counts.counts * 0.85)
-      continue;
-    sm++;
-    if (count > maxCount) {
-      maxCount = count;
-      maxColor = color;
+  const avgR = sumR / brightCount;
+  const avgG = sumG / brightCount;
+  const avgB = sumB / brightCount;
+  const brightness = (avgR + avgG + avgB) / 3;
+  const total = avgR + avgG + avgB;
+
+  if (!Number.isFinite(total) || total <= 0) {
+    return { r: 0, g: 0, b: 0, brightness: 0, dominant: 'off' };
+  }
+
+  const rRatio = avgR / total;
+  const gRatio = avgG / total;
+  const bRatio = avgB / total;
+
+  const ratios = [
+    { name: 'red', ratio: rRatio, value: avgR },
+    { name: 'green', ratio: gRatio, value: avgG },
+    { name: 'blue', ratio: bRatio, value: avgB }
+  ].sort((a, b) => b.ratio - a.ratio);
+
+  const top = ratios[0];
+  const second = ratios[1];
+  const ratioGap = top.ratio - second.ratio;
+  const channelSpread = Math.max(avgR, avgG, avgB) - Math.min(avgR, avgG, avgB);
+  const whiteness = Math.max(
+    Math.abs(rRatio - gRatio),
+    Math.abs(rRatio - bRatio),
+    Math.abs(gRatio - bRatio)
+  );
+  const absoluteGap = top.value - second.value;
+
+  let dominant = 'off';
+
+  if (brightness >= 45 && top.value >= 70) {
+    if (whiteness < 0.12 && brightness >= 65 && second.value >= 80 && top.value >= 80) {
+      dominant = 'white';
+    } else if (ratioGap >= 0.1 && absoluteGap >= 45) {
+      dominant = top.name;
+    } else if (channelSpread < 25 && brightness >= 80) {
+      dominant = 'white';
     }
   }
-  if (sm === 3){
-    maxColor = "white";
+
+  if (dominant === 'off' && brightness >= 90 && whiteness < 0.15 && top.value >= 95 && second.value >= 90) {
+    dominant = 'white';
   }
 
-  if (counts.counts < sz * 0.85)
-    return { r: 0, g: 0, b: 0 };
-
-  switch (maxColor) {
-    case "red": return { r: 255, g: 0, b: 0 };
-    case "green": return { r: 0, g: 255, b: 0 };
-    case "blue": return { r: 0, g: 0, b: 255 };
-    case "white": return { r: 255, g: 255, b: 255 };
-    default: return { r: 0, g: 0, b: 0 }; // off
-  }
+  return {
+    r: Math.round(avgR),
+    g: Math.round(avgG),
+    b: Math.round(avgB),
+    brightness,
+    dominant
+  };
 }
 
 
-
-
-
-
-
-function calcBrightness(rgb){ return (rgb.r+rgb.g+rgb.b)/3; }
 
 async function startCamera(){
   if(running) return;
@@ -288,23 +303,19 @@ function loop(){
   ctx.drawImage(video,0,0,overlay.width,overlay.height);
   const s = roi.size;
   const rx = roi.x-s/2, ry = roi.y-s/2;
-  ctx.strokeStyle='lime'; ctx.lineWidth=2;
-  ctx.strokeRect(rx,ry,s,s);
 
   // --- Определение текущего цвета ---
   const img = ctx.getImageData(rx, ry, s, s);
-  const rgb = detectColor(img);
-  const bright = calcBrightness(rgb);
+  const analysis = detectColor(img);
+  const colorName = (analysis.dominant || 'off');
+  currentColorEl.textContent = `${colorName} (R=${analysis.r}, G=${analysis.g}, B=${analysis.b})`;
+  currentColorBox.style.backgroundColor = `rgb(${analysis.r},${analysis.g},${analysis.b})`;
 
-  let colorName = "off";
-  if(bright > 40){ // если не слишком темно
-    if(rgb.r > rgb.g && rgb.r > rgb.b) colorName = "red";
-    else if(rgb.g > rgb.r && rgb.g > rgb.b) colorName = "green";
-    else if(rgb.b > rgb.r && rgb.b > rgb.g) colorName = "blue";
-    else colorName = "white";
-  }
-  currentColorEl.textContent = `${colorName} (R=${rgb.r}, G=${rgb.g}, B=${rgb.b})`;
-  currentColorBox.style.backgroundColor = `rgb(${rgb.r},${rgb.g},${rgb.b})`;
+  ctx.save();
+  ctx.strokeStyle='lime';
+  ctx.lineWidth=2;
+  ctx.strokeRect(rx,ry,s,s);
+  ctx.restore();
 
 
 

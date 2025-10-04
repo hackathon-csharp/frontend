@@ -136,6 +136,24 @@ let lastColorRecorded = "off";
 let lastColorTime = Date.now();
 let pendingDecode = false;
 
+function startTransmission({ logMessage = true, resetDecoded = false, status = 'Запись активна' } = {}) {
+  transmissionActive = true;
+  blinkEvents = [];
+  lastTransitionTime = Date.now();
+  lastColor = 0;
+  colorEvents.length = 0;
+  lastColorRecorded = 'off';
+  lastColorTime = Date.now();
+  pendingDecode = false;
+  if (resetDecoded) {
+    decodedEl.textContent = '—';
+  }
+  statusEl.textContent = status;
+  if (logMessage) {
+    log('Начата запись сигналов');
+  }
+}
+
 function msToMicros(ms) {
   return Math.max(1, Math.round(ms * 1000));
 }
@@ -215,10 +233,8 @@ function attemptDecode(finalOffDurationMs = null) {
   const message = decodedMessages.join('\n');
   log('Раскодированное сообщение: ' + message);
   decodedEl.textContent = message;
-  statusEl.textContent = 'Сообщение получено';
-  transmissionActive = false;
-  pendingDecode = false;
-  colorEvents.length = 0;
+  const nextStatus = 'Сообщение получено. Ожидание нового пакета';
+  startTransmission({ logMessage: false, resetDecoded: false, status: nextStatus });
   return true;
 }
 
@@ -363,12 +379,8 @@ function loop(){
   if (transmissionActive) {
     const now = Date.now();
     if (colorEvents.length && now - lastColorTime > 30000){
-      transmissionActive = false;
-      pendingDecode = false;
       log("Не удалось распознать пакет");
-      colorEvents.length = 0;
-      statusEl.textContent = 'Пакет не распознан';
-      decodedEl.textContent = '—';
+      startTransmission({ logMessage: false, resetDecoded: true, status: 'Пакет не распознан. Ожидание нового пакета' });
     } else {
       const colorLower = colorName.toLowerCase();
       if (colorLower !== lastColorRecorded) {
@@ -412,17 +424,7 @@ function loop(){
 
 
 startTransmissionBtn.addEventListener('click',()=>{
-  transmissionActive=true;
-  blinkEvents=[];
-  lastTransitionTime=Date.now();
-  lastColor=0;
-  colorEvents.length = 0;
-  lastColorRecorded = 'off';
-  lastColorTime = Date.now();
-  pendingDecode = false;
-  decodedEl.textContent = '—';
-  statusEl.textContent = 'Запись активна';
-  log('Начата запись сигналов');
+  startTransmission({ logMessage: true, resetDecoded: true, status: 'Запись активна' });
 });
 
 
@@ -492,6 +494,7 @@ startTransmissionBtn.addEventListener('click',()=>{
 //   }
 // });
 
+startTransmission({ logMessage: true, resetDecoded: true, status: 'Поиск пакета' });
 startCamera();
 </script>
 </body>

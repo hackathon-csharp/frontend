@@ -1,498 +1,479 @@
 <!doctype html>
 <html lang="ru">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>IR LED Color Decoder with Auto Sync</title>
-<style>
-body{font-family:system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial;margin:16px;background:#f6f7fb;color:#0b1220}
-h1{font-size:20px;margin:0 0 8px}
-.row{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap}
-video, canvas{background:#000;border-radius:8px;max-width:100%;}
-#video{display: none;}
-#controls{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}
-.box{padding:12px;background:#fff;border-radius:10px;box-shadow:0 2px 8px rgba(12,20,40,0.06)}
-#log{height:140px;overflow:auto;background:#0b1220;color:#dff3ff;padding:8px;border-radius:8px;font-family:monospace;font-size:13px}
-#decoded{height:140px;overflow:auto;background:#f0f4ff;color:#0b1220;padding:8px;border-radius:8px;font-family:monospace;font-size:13px;margin-top:8px}
-#unitDurationInput{width:100%;padding:6px;border-radius:6px;border:1px solid #ccc;margin-top:4px}
-label[for="unitDurationInput"]{display:block;margin-top:8px;font-weight:500;font-size:14px}
-button{padding:8px 12px;border-radius:8px;border:0;background:#2563eb;color:#fff;cursor:pointer}
-button.secondary{background:#e6eefc;color:#0b1220}
-small{color:#39424a}
-#currentColorBox{width:24px;height:24px;display:inline-block;border:1px solid #ccc;margin-left:8px;vertical-align:middle;border-radius:4px}
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>IR Light Decoder</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px 48px;
+      box-sizing: border-box;
+    }
+    h1 {
+      margin: 0 0 24px;
+      font-size: clamp(22px, 4vw, 32px);
+      font-weight: 600;
+      text-align: center;
+    }
+    main {
+      display: grid;
+      gap: 20px;
+      width: min(1100px, 100%);
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    }
+    .panel {
+      background: rgba(15, 23, 42, 0.66);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 24px 48px -20px rgba(15, 23, 42, 0.8);
+      backdrop-filter: blur(6px);
+    }
+    #video {
+      width: 100%;
+      border-radius: 12px;
+      background: #000;
+      display: block;
+    }
+    canvas {
+      width: 100%;
+      max-height: 420px;
+      border-radius: 12px;
+      margin-top: 12px;
+      background: #000;
+    }
+    #status {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+    #currentColorBox {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      border: 1px solid rgba(235, 245, 255, 0.4);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-right: 12px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .label {
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: rgba(148, 163, 184, 0.9);
+      margin: 16px 0 6px;
+    }
+    .data-box {
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 12px;
+      padding: 12px;
+      min-height: 82px;
+      font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+      font-size: 13px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    #log {
+      max-height: 200px;
+    }
+    small {
+      color: rgba(148, 163, 184, 0.9);
+    }
+    a, a:visited {
+      color: #60a5fa;
+      text-decoration: none;
+    }
+    .status-ok {
+      color: #4ade80;
+    }
+    .status-warn {
+      color: #facc15;
+    }
+    .status-error {
+      color: #f87171;
+    }
+  </style>
 </head>
 <body>
-<h1>IR LED Color Decoder with Auto Sync</h1>
-<div class="row">
-  <div class="box" style="flex:1;min-width:320px">
-    <video id="video" autoplay playsinline muted></video>
-    <canvas id="overlay" width="640" height="480" style="position:relative;display:block;margin-top:8px"></canvas>
-    <div id="controls">
-      <button id="startTransmissionBtn">Начать запись</button>
-      <button id="syncBtn" class="secondary">Синхронизация</button>
-    </div>
-    <p style="margin-top:6px"><small>Кликните на видео, чтобы выбрать область (ROI) для слежения. По умолчанию отслеживается центр.</small></p>
-  </div>
-  <div class="box" style="width:360px">
-    <h2 style="margin-top:0">Информация</h2>
-    <div id="status">—</div>
-  <label for="unitDurationInput">Длительность единицы (мс)</label>
-  <input type="number" id="unitDurationInput" min="50" step="10" value="600">
+  <h1>Оптический декодер • Камера → datapack</h1>
+  <main>
+    <section class="panel" id="capturePanel">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="overlay" width="640" height="480"></canvas>
+      <p><small>Нажмите по кадру, чтобы выбрать область анализа (ROI). По умолчанию отслеживается центр рамки.</small></p>
+    </section>
+    <section class="panel" id="infoPanel">
+      <div id="status" class="status-warn">Инициализация…</div>
+      <div class="label">Текущий цвет</div>
+      <div style="display:flex; align-items:center; gap:12px;">
+        <div id="currentColorBox">—</div>
+        <div id="currentColor">—</div>
+      </div>
+      <div class="label">Декодированное сообщение</div>
+      <div id="decoded" class="data-box">—</div>
+      <div class="label">HEX буфер (как в example_js.js)</div>
+      <div id="buffer" class="data-box">—</div>
+      <div class="label">Журнал событий</div>
+      <div id="log" class="data-box"></div>
+    </section>
+  </main>
 
-    <h3 style="margin-bottom:6px">Текущий цвет</h3>
-    <div id="currentColor">—</div>
-    <div id="currentColorBox"></div>
+  <script src="datapacklib.js"></script>
+  <script>
+    const video = document.getElementById('video');
+    const overlay = document.getElementById('overlay');
+    const ctx = overlay.getContext('2d');
 
-    <h3 style="margin-bottom:6px">Записанные события</h3>
-    <div id="log"></div>
-    <h3 style="margin-bottom:6px">Декодированное сообщение</h3>
-    <div id="decoded">—</div>
-  </div>
-</div>
+    const statusEl = document.getElementById('status');
+    const currentColorEl = document.getElementById('currentColor');
+    const currentColorBox = document.getElementById('currentColorBox');
+    const bufferEl = document.getElementById('buffer');
+    const decodedEl = document.getElementById('decoded');
+    const logEl = document.getElementById('log');
 
+    const { LightLevel } = datapack;
 
+    const fromColorToLevel = {
+      off: LightLevel.Off,
+      red: LightLevel.Red,
+      green: LightLevel.Green,
+      blue: LightLevel.Blue,
+      white: LightLevel.White,
+    };
 
-<script src="datapacklib.js"></script>
-<script>
-const video = document.getElementById('video');
-const overlay = document.getElementById('overlay');
-const ctx = overlay.getContext('2d');
-const startTransmissionBtn = document.getElementById('startTransmissionBtn');
-const syncBtn = document.getElementById('syncBtn');
-const statusEl = document.getElementById('status');
-const logEl = document.getElementById('log');
-const decodedEl = document.getElementById('decoded');
-const currentColorEl = document.getElementById('currentColor');
-const currentColorBox = document.getElementById('currentColorBox');
-const unitDurationInput = document.getElementById('unitDurationInput');
+    const colorNames = {
+      [LightLevel.Off]: 'Выкл',
+      [LightLevel.Red]: 'Красный',
+      [LightLevel.Green]: 'Зелёный',
+      [LightLevel.Blue]: 'Синий',
+      [LightLevel.White]: 'Белый',
+    };
 
-const fromColorToLevel = {
-  "off" : 0,
-  "red": 2,
-  "green": 3,
-  "blue": 4,
-  "white": 1,
-}
+    const UNIT_DURATION_MS = 600;
+    const MIN_EVENT_DURATION_MS = 90;
+    const OFF_DECODE_DELAY = UNIT_DURATION_MS * 1.6;
+    const INACTIVITY_RESET_MS = 30000;
+    const ROI_DEFAULT_SIZE = 160;
 
-const colorNames = {
-  2: 'red',
-  3: 'green',
-  4: 'blue',
-  1: 'white',
-  0: 'off'
-};
+    let lastColor = 'off';
+    let lastChange = Date.now();
+    let lastEventTimestamp = Date.now();
+    let pendingOffDecode = false;
+    let roi = null;
 
-let defaultProtocolConfig = new datapack.ProtocolConfig();
-const DEFAULT_UNIT_DURATION = defaultProtocolConfig.unitDurationMicros || 600;
-const textDecoder = new TextDecoder();
-const DECODER_DRIFT = 0.6;
-const MIN_EVENT_DURATION_MS = 100;
+    let lastBufferHex = '';
+    let lastDecodedText = '';
 
-let currentUnitDuration = DEFAULT_UNIT_DURATION;
+    const textDecoder = new TextDecoder();
 
-function sanitizeUnitDuration(value){
-  const numeric = Number(value);
-  if(!Number.isFinite(numeric) || numeric <= 0){
-    return DEFAULT_UNIT_DURATION;
-  }
-  return Math.min(10000, Math.max(50, Math.round(numeric)));
-}
+    datapack.resetDecoder();
+    datapack.setSignalDuration(UNIT_DURATION_MS);
+    datapack.setMinDuration(MIN_EVENT_DURATION_MS);
 
-function applyUnitDuration(newValue, logChange = false){
-  const sanitized = sanitizeUnitDuration(newValue);
-  currentUnitDuration = sanitized;
-  unitDurationInput.value = sanitized;
-  const updated = defaultProtocolConfig.clone();
-  updated.unitDurationMicros = sanitized;
-  defaultProtocolConfig = new datapack.ProtocolConfig(updated);
-  if (logChange) {
-    log('Базовая длительность единицы установлена: ' + sanitized + ' мс');
-  }
-}
-
-unitDurationInput.addEventListener('change', ()=>applyUnitDuration(unitDurationInput.value, true));
-unitDurationInput.addEventListener('blur', ()=>applyUnitDuration(unitDurationInput.value));
-unitDurationInput.addEventListener('keyup', (event)=>{
-  if(event.key === 'Enter'){
-    applyUnitDuration(unitDurationInput.value, true);
-  }
-});
-
-applyUnitDuration(unitDurationInput.value);
-
-let stream = null;
-let running = false;
-let roi = null;
-
-let transmissionActive = false;
-let blinkEvents = [];
-let lastTransitionTime = Date.now();
-let lastColor = 0;
-
-
-let colorEvents = [];
-let lastColorRecorded = "off";
-let lastColorTime = Date.now();
-let pendingDecode = false;
-
-function msToMicros(ms) {
-  return Math.max(1, Math.round(ms * 1000));
-}
-
-function attemptDecode(finalOffDurationMs = null) {
-  if (!colorEvents.length) {
-    return false;
-  }
-
-  const filteredEvents = colorEvents.filter(evt => evt.durationMs >= MIN_EVENT_DURATION_MS);
-  if (!filteredEvents.length) {
-    log('Недостаточно длинных событий для декодирования');
-    return false;
-  }
-
-  const events = filteredEvents.map(evt => ({
-    level: evt.level,
-    durationMicros: msToMicros(evt.durationMs)
-  }));
-
-  if (typeof finalOffDurationMs === 'number' && finalOffDurationMs >= MIN_EVENT_DURATION_MS) {
-    events.push({
-      level: fromColorToLevel["off"],
-      durationMicros: msToMicros(finalOffDurationMs)
+    datapack.setOnPacketReceived((pkg) => {
+      log(`Пакет принят (${pkg.length} байт)`);
     });
-  }
 
-  const markEvents = events.filter(evt => evt.level !== fromColorToLevel["off"]);
-  if (markEvents.length < 2) {
-    return false;
-  }
-
-  const preambleMarks = markEvents.filter(evt => evt.level === defaultProtocolConfig.preambleColor);
-  let unitDurationMicros;
-  if (preambleMarks.length) {
-    const preambleDuration = Math.max(...preambleMarks.map(evt => evt.durationMicros));
-    unitDurationMicros = Math.round(preambleDuration / defaultProtocolConfig.preambleMarkUnits);
-  } else {
-    const minMark = Math.min(...markEvents.map(evt => evt.durationMicros));
-    unitDurationMicros = Math.round(minMark);
-  }
-
-  if (!Number.isFinite(unitDurationMicros) || unitDurationMicros <= 0) {
-    unitDurationMicros = currentUnitDuration;
-  }
-
-  unitDurationMicros = Math.max(50, Math.round(unitDurationMicros));
-
-  const decoderConfig = {
-    unitDurationMicros,
-    allowedDriftFraction: DECODER_DRIFT,
-    preambleMarkUnits: defaultProtocolConfig.preambleMarkUnits,
-    preambleSpaceUnits: defaultProtocolConfig.preambleSpaceUnits,
-    symbolMarkUnits: defaultProtocolConfig.symbolMarkUnits,
-    separatorUnits: defaultProtocolConfig.separatorUnits,
-    frameGapUnits: defaultProtocolConfig.frameGapUnits,
-    preambleColor: defaultProtocolConfig.preambleColor,
-    maxPayloadBytes: defaultProtocolConfig.maxPayloadBytes,
-    magic: defaultProtocolConfig.magic,
-    ender: defaultProtocolConfig.ender,
-    version: defaultProtocolConfig.version
-  };
-
-  const decodedMessages = [];
-  const decoder = new datapack.Decoder((payload, length) => {
-    decodedMessages.push(textDecoder.decode(payload.subarray(0, length)));
-  }, null, decoderConfig);
-
-  for (const change of events) {
-    decoder.feed({ level: change.level, duration: change.durationMicros });
-  }
-
-  if (!decodedMessages.length) {
-    return false;
-  }
-
-  const message = decodedMessages.join('\n');
-  log('Раскодированное сообщение: ' + message);
-  decodedEl.textContent = message;
-  statusEl.textContent = 'Сообщение получено';
-  transmissionActive = false;
-  pendingDecode = false;
-  colorEvents.length = 0;
-  return true;
-}
-
-
-function log(msg){
-  const time = new Date().toLocaleTimeString();
-  logEl.innerHTML = `<div>[${time}] ${msg}</div>` + logEl.innerHTML;
-  const lines = logEl.querySelectorAll('div');
-  if(lines.length>200) lines[lines.length-1].remove();
-}
-
-overlay.addEventListener('click',(e)=>{
-  const rect = overlay.getBoundingClientRect();
-  const x = Math.floor((e.clientX-rect.left)*(overlay.width/rect.width));
-  const y = Math.floor((e.clientY-rect.top)*(overlay.height/rect.height));
-  roi = { x, y, size: 128 };
-  log('ROI установлен: x=' + roi.x + ', y=' + roi.y);
-});
-
-function detectColor(imageData) {
-  const data = imageData.data;
-  let sumR = 0, sumG = 0, sumB = 0;
-  let brightCount = 0;
-
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
-    const brightness = (r + g + b) / 3;
-
-    if (brightness < 30) {
-      continue;
+    function log(message, level = 'info') {
+      const time = new Date().toLocaleTimeString();
+      const line = document.createElement('div');
+      line.textContent = `[${time}] ${message}`;
+      if (level === 'error') line.style.color = '#fca5a5';
+      if (level === 'warn') line.style.color = '#fde68a';
+      logEl.prepend(line);
+      while (logEl.children.length > 200) {
+        logEl.removeChild(logEl.lastChild);
+      }
     }
 
-    sumR += r;
-    sumG += g;
-    sumB += b;
-    brightCount++;
-  }
-
-  if (!brightCount) {
-    return { r: 0, g: 0, b: 0, brightness: 0, dominant: 'off' };
-  }
-
-  const avgR = sumR / brightCount;
-  const avgG = sumG / brightCount;
-  const avgB = sumB / brightCount;
-  const brightness = (avgR + avgG + avgB) / 3;
-  const total = avgR + avgG + avgB;
-
-  if (!Number.isFinite(total) || total <= 0) {
-    return { r: 0, g: 0, b: 0, brightness: 0, dominant: 'off' };
-  }
-
-  const rRatio = avgR / total;
-  const gRatio = avgG / total;
-  const bRatio = avgB / total;
-
-  const ratios = [
-    { name: 'red', ratio: rRatio, value: avgR },
-    { name: 'green', ratio: gRatio, value: avgG },
-    { name: 'blue', ratio: bRatio, value: avgB }
-  ].sort((a, b) => b.ratio - a.ratio);
-
-  const top = ratios[0];
-  const second = ratios[1];
-  const ratioGap = top.ratio - second.ratio;
-  const channelSpread = Math.max(avgR, avgG, avgB) - Math.min(avgR, avgG, avgB);
-  const whiteness = Math.max(
-    Math.abs(rRatio - gRatio),
-    Math.abs(rRatio - bRatio),
-    Math.abs(gRatio - bRatio)
-  );
-  const absoluteGap = top.value - second.value;
-
-  let dominant = 'off';
-
-  if (brightness >= 45 && top.value >= 70) {
-    if (whiteness < 0.12 && brightness >= 65 && second.value >= 80 && top.value >= 80) {
-      dominant = 'white';
-    } else if (ratioGap >= 0.1 && absoluteGap >= 45) {
-      dominant = top.name;
-    } else if (channelSpread < 25 && brightness >= 80) {
-      dominant = 'white';
-    }
-  }
-
-  if (dominant === 'off' && brightness >= 90 && whiteness < 0.15 && top.value >= 95 && second.value >= 90) {
-    dominant = 'white';
-  }
-
-  return {
-    r: Math.round(avgR),
-    g: Math.round(avgG),
-    b: Math.round(avgB),
-    brightness,
-    dominant
-  };
-}
-
-
-
-async function startCamera(){
-  if(running) return;
-  try{
-    stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:"environment", width:1280, height:720 }, audio:false });
-  }catch(err){ statusEl.textContent='Ошибка доступа к камере: '+(err.message||err.name); return; }
-  video.srcObject = stream;
-  try{ await video.play(); }catch(e){}
-  overlay.width = video.videoWidth || 640;
-  overlay.height = video.videoHeight || 480;
-  if(!roi) roi={x:overlay.width/2, y:overlay.height/2, size: 128};
-  running=true;
-  statusEl.textContent='Камера запущена';
-  requestAnimationFrame(loop);
-}
-
-function loop(){
-  if(!running) return;
-  ctx.drawImage(video,0,0,overlay.width,overlay.height);
-  const s = roi.size;
-  const rx = roi.x-s/2, ry = roi.y-s/2;
-
-  // --- Определение текущего цвета ---
-  const img = ctx.getImageData(rx, ry, s, s);
-  const analysis = detectColor(img);
-  const colorName = (analysis.dominant || 'off');
-  currentColorEl.textContent = `${colorName} (R=${analysis.r}, G=${analysis.g}, B=${analysis.b})`;
-  currentColorBox.style.backgroundColor = `rgb(${analysis.r},${analysis.g},${analysis.b})`;
-
-  ctx.save();
-  ctx.strokeStyle='lime';
-  ctx.lineWidth=2;
-  ctx.strokeRect(rx,ry,s,s);
-  ctx.restore();
-
-
-
-
-
-  // --- Если идёт запись, фиксируем смену цвета ---
-  if (transmissionActive) {
-    const now = Date.now();
-    if (colorEvents.length && now - lastColorTime > 30000){
-      transmissionActive = false;
-      pendingDecode = false;
-      log("Не удалось распознать пакет");
-      colorEvents.length = 0;
-      statusEl.textContent = 'Пакет не распознан';
+    function resetDecoderState(reason) {
+      datapack.resetDecoder();
+      lastBufferHex = '';
+      lastDecodedText = '';
+      bufferEl.textContent = '—';
       decodedEl.textContent = '—';
-    } else {
-      const colorLower = colorName.toLowerCase();
-      if (colorLower !== lastColorRecorded) {
-        const duration = now - lastColorTime;
-        const level = fromColorToLevel[lastColorRecorded];
-        if (level !== undefined) {
-          if (duration >= MIN_EVENT_DURATION_MS) {
-            colorEvents.push({ level, durationMs: duration });
-            log(`event: ${lastColorRecorded} level=${level}, duration=${duration.toFixed(1)}мс`);
-          } else {
-            log(`игнор: ${lastColorRecorded} слишком коротко (${duration.toFixed(1)}мс)`);
-          }
-        }
+      if (reason) {
+        log(reason, 'warn');
+      }
+      statusEl.textContent = 'Ожидание сигнала';
+      statusEl.className = 'status-warn';
+    }
 
-        lastColorRecorded = colorLower;
-        lastColorTime = now;
-        pendingDecode = colorLower === 'off';
-        if (colorLower === 'off') {
-          statusEl.textContent = 'Ожидание завершения пакета';
-        } else {
-          statusEl.textContent = 'Фиксирован цвет: ' + colorLower;
-        }
+    function getTrimmedPayload() {
+      const data = datapack.getReceivedData();
+      if (!(data instanceof Uint8Array) || data.length === 0) {
+        return null;
       }
 
-      if (pendingDecode) {
-        const offDuration = Date.now() - lastColorTime;
-        if (offDuration > MIN_EVENT_DURATION_MS * 2) {
-          const decoded = attemptDecode(offDuration);
-          if (!decoded) {
-            pendingDecode = false;
-          }
+      let usable = data.length;
+      while (usable > 0 && data[usable - 1] === 0) {
+        usable -= 1;
+      }
+      if (usable === 0) {
+        return null;
+      }
+
+      const payload = data.subarray(0, usable);
+      const hex = Array.from(payload, (b) => b.toString(16).padStart(2, '0')).join(' ');
+      let text = '';
+      try {
+        text = textDecoder.decode(payload);
+      } catch (err) {
+        text = '';
+      }
+      return { payload, hex, text };
+    }
+
+    function updateBuffer() {
+      const result = getTrimmedPayload();
+      if (!result) {
+        if (lastBufferHex !== '') {
+          bufferEl.textContent = '—';
+          lastBufferHex = '';
         }
+        return null;
+      }
+      if (result.hex !== lastBufferHex) {
+        bufferEl.textContent = result.hex || '—';
+        lastBufferHex = result.hex;
+      }
+      return result;
+    }
+
+    function attemptDecode(forceLog = false, cachedResult = null) {
+      const result = cachedResult || getTrimmedPayload();
+      if (!result) {
+        if (forceLog) {
+          log('Пакет не распознан', 'error');
+          statusEl.textContent = 'Пакет не распознан';
+          statusEl.className = 'status-error';
+        }
+        return;
+      }
+
+      const hasText = typeof result.text === 'string' && result.text.length > 0;
+      if (hasText && result.text !== lastDecodedText) {
+        decodedEl.textContent = result.text;
+        statusEl.textContent = 'Сообщение получено';
+        statusEl.className = 'status-ok';
+        log(`Раскодированное сообщение (${result.payload.length} байт): "${result.text}"`);
+        log(`HEX: ${result.hex}`);
+        lastDecodedText = result.text;
+      } else if (forceLog && !hasText) {
+        log('Пакет не распознан', 'error');
+        statusEl.textContent = 'Пакет не распознан';
+        statusEl.className = 'status-error';
       }
     }
-  }
 
+    function recordEvent(level, durationMs) {
+      const normalizedDuration = Math.max(MIN_EVENT_DURATION_MS, Math.round(durationMs));
+      try {
+        datapack.feed({ value: level, duration: normalizedDuration });
+      } catch (error) {
+        log(`Ошибка feed: ${error && error.message ? error.message : error}`, 'error');
+        return;
+      }
+      lastEventTimestamp = Date.now();
+      const label = colorNames[level] || `Level ${level}`;
+      log(`Событие: ${label} (${normalizedDuration} мс)`);
+      const payload = updateBuffer();
+      if (level === LightLevel.Off) {
+        attemptDecode(true, payload);
+      }
+    }
 
-  requestAnimationFrame(loop);
-}
+    function detectColor(imageData) {
+      const data = imageData.data;
+      let sumR = 0, sumG = 0, sumB = 0;
+      let brightCount = 0;
 
+      for (let i = 0; i < data.length; i += 4) {
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        const brightness = (r + g + b) / 3;
+        if (brightness < 35) continue;
+        sumR += r;
+        sumG += g;
+        sumB += b;
+        brightCount += 1;
+      }
 
+      if (!brightCount) {
+        return { dominant: 'off', r: 0, g: 0, b: 0, brightness: 0 };
+      }
 
-startTransmissionBtn.addEventListener('click',()=>{
-  transmissionActive=true;
-  blinkEvents=[];
-  lastTransitionTime=Date.now();
-  lastColor=0;
-  colorEvents.length = 0;
-  lastColorRecorded = 'off';
-  lastColorTime = Date.now();
-  pendingDecode = false;
-  decodedEl.textContent = '—';
-  statusEl.textContent = 'Запись активна';
-  log('Начата запись сигналов');
-});
+      const avgR = sumR / brightCount;
+      const avgG = sumG / brightCount;
+      const avgB = sumB / brightCount;
+      const brightness = (avgR + avgG + avgB) / 3;
+      const total = avgR + avgG + avgB;
 
+      if (!Number.isFinite(total) || total <= 0) {
+        return { dominant: 'off', r: 0, g: 0, b: 0, brightness: 0 };
+      }
 
+      const ratios = [
+        { name: 'red', value: avgR },
+        { name: 'green', value: avgG },
+        { name: 'blue', value: avgB }
+      ].sort((a, b) => b.value - a.value);
 
+      const top = ratios[0];
+      const mid = ratios[1];
+      const spread = Math.max(avgR, avgG, avgB) - Math.min(avgR, avgG, avgB);
+      const whiteness = Math.max(
+        Math.abs(avgR - avgG),
+        Math.abs(avgR - avgB),
+        Math.abs(avgG - avgB)
+      );
 
-// // --- СИНХРОНИЗАЦИЯ ---
-// syncBtn.addEventListener('click', async () => {
-//   log('Начата синхронизация...');
-  
-//   const states = ['Выкл', 'Белый', 'Выкл','Красный', 'Выкл','Синий', 'Выкл','Зелёный'];
-//   const colorSamples = {};
-//   const thresholdMargin = 100; 
-//   let prevColor = null;
-//   let stateIndex = 0;
-//   const roiSamples = 1; 
+      let dominant = 'off';
 
-//   function averageColor(samples) {
-//     const avg = samples.reduce((acc, val) => {
-//       acc.r += val.r; acc.g += val.g; acc.b += val.b;
-//       return acc;
-//     }, { r: 0, g: 0, b: 0 });
-//     avg.r = Math.round(avg.r / samples.length);
-//     avg.g = Math.round(avg.g / samples.length);
-//     avg.b = Math.round(avg.b / samples.length);
-//     return avg;
-//   }
+      if (brightness >= 55 && top.value >= 70) {
+        const ratioGap = top.value - mid.value;
+        if (spread < 25 && brightness > 90) {
+          dominant = 'white';
+        } else if (whiteness < 18 && brightness > 100 && mid.value > 80) {
+          dominant = 'white';
+        } else if (ratioGap >= 25) {
+          dominant = top.name;
+        }
+      }
 
-//   function colorDelta(c1, c2) {
-//     return Math.abs(c1.r - c2.r) + Math.abs(c1.g - c2.g) + Math.abs(c1.b - c2.b);
-//   }
+      if (dominant === 'off' && brightness > 110 && whiteness < 15) {
+        dominant = 'white';
+      }
 
-//   function brightness(rgb) {
-//     return rgb.r + rgb.g + rgb.b;
-//   }
+      return {
+        dominant,
+        r: Math.round(avgR),
+        g: Math.round(avgG),
+        b: Math.round(avgB),
+        brightness: Math.round(brightness)
+      };
+    }
 
-//   while (stateIndex < states.length) {
-//     const samples = [];
-//     for (let i = 0; i < roiSamples; i++) {
-//       const img = ctx.getImageData(roi.x - roi.size / 2, roi.y - roi.size / 2, roi.size, roi.size);
-//       samples.push(detectColor(img));
-//       await new Promise(r => setTimeout(r, 1));
-//     }
-//     const rgb = averageColor(samples);
-//     const bright = brightness(rgb);
+    overlay.addEventListener('click', (event) => {
+      const rect = overlay.getBoundingClientRect();
+      const x = Math.floor((event.clientX - rect.left) * (overlay.width / rect.width));
+      const y = Math.floor((event.clientY - rect.top) * (overlay.height / rect.height));
+      roi = { x, y, size: ROI_DEFAULT_SIZE };
+      log(`ROI обновлён: x=${roi.x}, y=${roi.y}, size=${roi.size}`);
+    });
 
-//     if (!prevColor) {
-//       prevColor = rgb;
-//       colorSamples[states[stateIndex]] = { ...rgb };
-//       log(`Состояние ${states[stateIndex]} захвачено: R=${rgb.r}, G=${rgb.g}, B=${rgb.b}`);
-//       stateIndex++;
-//     } else {
-//       const delta = colorDelta(rgb, prevColor);
-//       if (delta > thresholdMargin) {
-//         colorSamples[states[stateIndex]] = { ...rgb };
-//         log(`Состояние ${states[stateIndex]} захвачено: R=${rgb.r}, G=${rgb.g}, B=${rgb.b}`);
-//         stateIndex++;
-//       }
-//       prevColor = rgb;
-//     }
-//     await new Promise(r => setTimeout(r, 50));
-//   }
+    async function startCamera() {
+      statusEl.textContent = 'Запрашиваем доступ к камере…';
+      statusEl.className = 'status-warn';
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'environment',
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          },
+          audio: false
+        });
+        video.srcObject = stream;
+        await video.play().catch(() => {});
+        overlay.width = video.videoWidth || 640;
+        overlay.height = video.videoHeight || 480;
+        if (!roi) {
+          roi = {
+            x: Math.floor(overlay.width / 2),
+            y: Math.floor(overlay.height / 2),
+            size: ROI_DEFAULT_SIZE
+          };
+        }
+        statusEl.textContent = 'Камера запущена';
+        statusEl.className = 'status-ok';
+        requestAnimationFrame(loop);
+      } catch (error) {
+        const msg = error && error.message ? error.message : error;
+        statusEl.textContent = 'Ошибка доступа к камере: ' + msg;
+        statusEl.className = 'status-error';
+        log('Ошибка доступа к камере: ' + msg, 'error');
+      }
+    }
 
-//   log('Синхронизация завершена. Пороговые значения цветов:');
-//   for (const state in colorSamples) {
-//     const rgb = colorSamples[state];
-//     log(`${state}: R=${rgb.r}, G=${rgb.g}, B=${rgb.b}`);
-//   }
-// });
+    function loop() {
+      ctx.drawImage(video, 0, 0, overlay.width, overlay.height);
+      if (!roi) {
+        requestAnimationFrame(loop);
+        return;
+      }
 
-startCamera();
-</script>
+      const { x, y, size } = roi;
+      const half = size / 2;
+      const rx = Math.max(0, Math.min(overlay.width - size, Math.floor(x - half)));
+      const ry = Math.max(0, Math.min(overlay.height - size, Math.floor(y - half)));
+
+      const imageData = ctx.getImageData(rx, ry, size, size);
+      const analysis = detectColor(imageData);
+      const detected = typeof analysis.dominant === 'string' ? analysis.dominant.toLowerCase() : 'off';
+      const mapped = Object.prototype.hasOwnProperty.call(fromColorToLevel, detected) ? detected : 'off';
+      const level = fromColorToLevel[mapped];
+
+      ctx.save();
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(rx, ry, size, size);
+      ctx.restore();
+
+      currentColorBox.style.backgroundColor = level === LightLevel.Off ? '#020617' : `rgb(${analysis.r}, ${analysis.g}, ${analysis.b})`;
+      currentColorBox.textContent = level === LightLevel.Off ? '—' : '';
+      currentColorEl.textContent = `${colorNames[level]} | R${analysis.r} G${analysis.g} B${analysis.b}`;
+
+      const now = Date.now();
+      if (mapped !== lastColor) {
+        const duration = now - lastChange;
+        const prevLevel = fromColorToLevel[lastColor];
+        if (prevLevel !== undefined && duration >= MIN_EVENT_DURATION_MS) {
+          recordEvent(prevLevel, duration);
+        }
+        lastColor = mapped;
+        lastChange = now;
+        pendingOffDecode = mapped === 'off';
+        if (!pendingOffDecode) {
+          statusEl.textContent = `Фиксирован цвет: ${colorNames[level]}`;
+          statusEl.className = 'status-warn';
+        }
+      } else if (pendingOffDecode) {
+        const offDuration = now - lastChange;
+        if (offDuration >= OFF_DECODE_DELAY) {
+          recordEvent(LightLevel.Off, offDuration);
+          pendingOffDecode = false;
+          lastColor = 'off';
+          lastChange = now;
+        }
+      }
+
+      if (now - lastEventTimestamp > INACTIVITY_RESET_MS && (lastBufferHex || lastDecodedText)) {
+        resetDecoderState('Сброс после длительного отсутствия сигнала');
+      }
+
+      requestAnimationFrame(loop);
+    }
+
+    resetDecoderState();
+    startCamera();
+  </script>
 </body>
 </html>

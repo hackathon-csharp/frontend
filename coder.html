@@ -41,169 +41,219 @@ const messageInput = document.getElementById('messageInput');
 const unitDurationInput = document.getElementById('unitDurationInput');
 const signalLogEl = document.getElementById('signalLog');
 
+const { LightLevel } = datapack;
+const textEncoder = new TextEncoder();
+
+const DEFAULT_UNIT_DURATION = 600;
+const MIN_DURATION_FRACTION = 0.2;
+const MAX_LOG_ENTRIES = 300;
+
+let currentUnitDuration = DEFAULT_UNIT_DURATION;
+let sending = false;
+let stopRequested = false;
+let syncActive = false;
+
 const colorMap = {
-  2: 'rgb(255,0,0)',    // красный
-  3: 'rgb(0,255,0)',    // зелёный яркий
-  4: 'rgb(0,0,255)',    // синий
-  1: 'rgb(255,255,255)',// белый
-  0: 'rgb(0,0,0)'       // выкл
+  [LightLevel.Red]: 'rgb(255,0,0)',
+  [LightLevel.Green]: 'rgb(0,255,0)',
+  [LightLevel.Blue]: 'rgb(0,0,255)',
+  [LightLevel.White]: 'rgb(255,255,255)',
+  [LightLevel.Off]: 'rgb(0,0,0)'
 };
 
 const colorNames = {
-  2: 'Красный',
-  3: 'Зелёный',
-  4: 'Синий',
-  1: 'Белый',
-  0: 'Выкл'
+  [LightLevel.Red]: 'Красный',
+  [LightLevel.Green]: 'Зелёный',
+  [LightLevel.Blue]: 'Синий',
+  [LightLevel.White]: 'Белый',
+  [LightLevel.Off]: 'Выкл'
 };
 
-let sending = false;
-const DEFAULT_UNIT_DURATION = 600;
-let currentUnitDuration = DEFAULT_UNIT_DURATION;
+function appendLog(text) {
+  if (typeof text !== 'string' || !text.length) {
+    return;
+  }
+  if (signalLogEl.textContent.trim() === '—') {
+    signalLogEl.textContent = '';
+  }
+  const entry = document.createElement('div');
+  entry.textContent = text;
+  signalLogEl.appendChild(entry);
+  while (signalLogEl.childNodes.length > MAX_LOG_ENTRIES) {
+    signalLogEl.removeChild(signalLogEl.firstChild);
+  }
+  signalLogEl.scrollTop = signalLogEl.scrollHeight;
+}
 
-function sanitizeUnitDuration(value){
+function sanitizeUnitDuration(value) {
   const numeric = Number(value);
-  if(!Number.isFinite(numeric) || numeric <= 0){
+  if (!Number.isFinite(numeric) || numeric <= 0) {
     return DEFAULT_UNIT_DURATION;
   }
   return Math.min(10000, Math.max(50, Math.round(numeric)));
 }
 
-function updateUnitDuration(){
+function updateUnitDuration() {
   const sanitized = sanitizeUnitDuration(unitDurationInput.value);
   currentUnitDuration = sanitized;
   unitDurationInput.value = sanitized;
+  datapack.setSignalDuration(sanitized);
+  datapack.setMinDuration(Math.max(30, Math.round(sanitized * MIN_DURATION_FRACTION)));
+}
+
+function drawColor(level) {
+  ctx.fillStyle = colorMap[level] || colorMap[LightLevel.Off];
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function transmitLoop(message) {
+  sending = true;
+  stopRequested = false;
+  startBtn.textContent = 'Остановить';
+  startBtn.disabled = false;
+  syncBtn.disabled = true;
+  signalLogEl.textContent = '';
+  drawColor(LightLevel.Off);
+
+  updateUnitDuration();
+
+  let payload;
+  let commands;
+  try {
+    datapack.resetEncoder();
+    payload = textEncoder.encode(message);
+    datapack.setSendData(payload, payload.length);
+    commands = datapack.getSendCommands();
+  } catch (error) {
+    appendLog('Ошибка кодирования: ' + (error && error.message ? error.message : error));
+    drawColor(LightLevel.Off);
+    startBtn.textContent = 'Начать отправку';
+    syncBtn.disabled = false;
+    sending = false;
+    stopRequested = false;
+    return;
+  }
+
+  if (!Array.isArray(commands) || !commands.length) {
+    appendLog('Не удалось сформировать команды для передачи');
+    drawColor(LightLevel.Off);
+    startBtn.textContent = 'Начать отправку';
+    syncBtn.disabled = false;
+    sending = false;
+    stopRequested = false;
+    return;
+  }
+
+  const hexDump = Array.from(payload).map(b => b.toString(16).padStart(2, '0')).join(' ');
+  appendLog(`Сообщение: "${message}" (${payload.length} байт)`);
+  appendLog(`HEX: ${hexDump}`);
+  appendLog(`Команд в цикле: ${commands.length}`);
+
+  let iteration = 0;
+  while (!stopRequested) {
+    iteration += 1;
+    appendLog(`— Цикл ${iteration} —`);
+
+    for (const command of commands) {
+      if (stopRequested) {
+        break;
+      }
+      const level = command.value;
+      const durationMs = Math.max(1, Math.round(command.duration));
+      drawColor(level);
+      appendLog(`${colorNames[level] || `Уровень ${level}`}: ${durationMs} мс`);
+      await sleep(durationMs);
+    }
+
+    drawColor(LightLevel.Off);
+    if (!stopRequested) {
+      await sleep(Math.max(1, Math.round(currentUnitDuration)));
+    }
+  }
+
+  appendLog('Передача остановлена');
+  drawColor(LightLevel.Off);
+  startBtn.textContent = 'Начать отправку';
+  syncBtn.disabled = false;
+  sending = false;
+  stopRequested = false;
+}
+
+async function runSyncSequence() {
+  if (sending || syncActive) {
+    return;
+  }
+  syncActive = true;
+  syncBtn.disabled = true;
+  startBtn.disabled = true;
+  signalLogEl.textContent = '';
+
+  const sequence = [
+    { level: LightLevel.Off, name: 'Выкл', time: 1500 },
+    { level: LightLevel.White, name: 'Белый', time: 1500 },
+    { level: LightLevel.Off, name: 'Выкл', time: 800 },
+    { level: LightLevel.Red, name: 'Красный', time: 1500 },
+    { level: LightLevel.Off, name: 'Выкл', time: 800 },
+    { level: LightLevel.Green, name: 'Зелёный', time: 1500 },
+    { level: LightLevel.Off, name: 'Выкл', time: 800 },
+    { level: LightLevel.Blue, name: 'Синий', time: 1500 },
+    { level: LightLevel.Off, name: 'Выкл', time: 1500 }
+  ];
+
+  try {
+    appendLog('Синхронизация начата');
+    for (const step of sequence) {
+      drawColor(step.level);
+      appendLog(`${step.name}: ${step.time} мс`);
+      await sleep(step.time);
+    }
+    appendLog('Синхронизация завершена');
+  } finally {
+    drawColor(LightLevel.Off);
+    syncActive = false;
+    syncBtn.disabled = false;
+    startBtn.disabled = false;
+  }
 }
 
 unitDurationInput.addEventListener('change', updateUnitDuration);
 unitDurationInput.addEventListener('blur', updateUnitDuration);
-unitDurationInput.addEventListener('keyup', (event)=>{
-  if(event.key === 'Enter'){
+unitDurationInput.addEventListener('keyup', event => {
+  if (event.key === 'Enter') {
     updateUnitDuration();
   }
 });
 
-updateUnitDuration();
-
-function drawColor(level){
-  ctx.fillStyle = colorMap[level] || 'black';
-  ctx.fillRect(0,0,canvas.width,canvas.height);
-}
-
-async function sleep(ms){
-  return new Promise(resolve=>setTimeout(resolve, ms));
-}
-
-async function transmitMessage(message){
-  sending = true;
-  signalLogEl.innerHTML = ''; // очистка списка
-
-  updateUnitDuration();
-  const unitDuration = currentUnitDuration;
-  const encoder = new datapack.Encoder({ unitDurationMicros: unitDuration });
-  const payload = new TextEncoder().encode(message);
-  const signalBuffer = new datapack.SignalBuffer();
-  const success = encoder.encode(payload, payload.length, signalBuffer);
-  if(!success){
-    alert("Ошибка кодирования!");
-    sending = false;
-    drawColor(datapack.LightLevel.Off);
+startBtn.addEventListener('click', () => {
+  if (syncActive) {
+    alert('Подождите завершения синхронизации');
+    return;
+  }
+  if (sending) {
+    stopRequested = true;
+    appendLog('Ожидание завершения текущего цикла...');
     return;
   }
 
-
-
-    const newBuffer = []
-
-     for (const change of signalBuffer) {
-        // newBuffer.push({level: 1, duration: 30});
-    newBuffer.push({level: change.level, duration: Math.max(1, change.duration - 100)})
-    }
-    
-  console.log(newBuffer);
-
-    // Создаём массив для результата
-    const decodedMessages = [];
-
-    // Создаём декодер с callback
-  const decoder = new datapack.Decoder((payload, length) => {
-    // payload — Uint8Array с исходными данными
-    decodedMessages.push(new TextDecoder().decode(payload));
-  }, null, { unitDurationMicros: unitDuration });
-
-    // Feed всех изменений из signalBuffer в декодер
-    for (const change of newBuffer) {
-    decoder.feed(change);
-    }
-
-    // После этого decodedMessages[0] содержит исходную строку
-    if (decodedMessages.length > 0) {
-    console.log("Раскодированное сообщение:", decodedMessages[0]);
-    } else {
-    console.log("Не удалось раскодировать сообщение");
-}
-
-
-
-  for(const change of signalBuffer){
-    drawColor(change.level);
-    const durationMs = change.duration;
-    signalLogEl.innerHTML += `${colorNames[change.level] || change.level}: ${durationMs.toFixed(1)} мс<br>`;
-    signalLogEl.scrollTop = signalLogEl.scrollHeight;
-    await sleep(durationMs);
+  const message = messageInput.value.trim();
+  if (!message.length) {
+    alert('Введите сообщение!');
+    return;
   }
 
-  drawColor(datapack.LightLevel.Off);
-  sending = false;
-}
-
-startBtn.addEventListener('click', ()=>{
-  if(sending) return;
-  const msg = messageInput.value.trim();
-  if(!msg) return alert("Введите сообщение!");
-  transmitMessage(msg);
+  transmitLoop(message);
 });
 
-async function runSyncSequence(){
-  if(sending) return; // не мешаем текущей передаче
-  sending = true;
+syncBtn.addEventListener('click', () => {
+  runSyncSequence();
+});
 
-//   const sequence = [
-//     {level: 4, name: 'Выкл', time: 4000},
-//     {level: 3, name: 'Белый', time: 1000},
-//     {level: 4, name: 'Выкл', time: 500},
-//     {level: 0, name: 'Красный', time: 1000},
-//     {level: 4, name: 'Выкл', time: 500},
-//     {level: 1, name: 'Зелёный', time: 1000},
-//     {level: 4, name: 'Выкл', time: 500},
-//     {level: 2, name: 'Синий', time: 1000},
-//     {level: 4, name: 'Выкл', time: 500}
-//   ];
-  const sequence = [
-    {level: 4, name: 'Выкл', time: 4000},
-    {level: 3, name: 'Белый', time: 2000},
-    {level: 4, name: 'Выкл', time: 1000},
-    {level: 0, name: 'Красный', time: 2000},
-    {level: 4, name: 'Выкл', time: 1000},
-    {level: 1, name: 'Зелёный', time: 2000},
-    {level: 4, name: 'Выкл', time: 1000},
-    {level: 2, name: 'Синий', time: 2000},
-    {level: 4, name: 'Выкл', time: 1000}
-  ];
-  signalLogEl.innerHTML = ''; // очистка логов
-
-  for(const step of sequence){
-    drawColor(step.level);  
-    signalLogEl.innerHTML += `${step.name}: ${step.time} мс<br>`;
-    signalLogEl.scrollTop = signalLogEl.scrollHeight;
-    await sleep(step.time);
-  }
-
- drawColor(4); 
-  sending = false;
-}
-
-syncBtn.addEventListener('click', runSyncSequence);
+updateUnitDuration();
+drawColor(LightLevel.Off);
 </script>
 </body>
 </html>
